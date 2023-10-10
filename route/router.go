@@ -69,9 +69,10 @@ type Router struct {
 	platformInterface       platform.Interface
 	needWIFIState           bool
 	started                 bool
+	reloadChan              chan<- struct{}
 }
 
-func NewRouter(ctx context.Context, logFactory log.Factory, options option.RouteOptions, dnsOptions option.DNSOptions) (*Router, error) {
+func NewRouter(ctx context.Context, logFactory log.Factory, options option.RouteOptions, dnsOptions option.DNSOptions, reloadChan chan<- struct{}) (*Router, error) {
 	router := &Router{
 		ctx:                   ctx,
 		logger:                logFactory.NewLogger("router"),
@@ -94,6 +95,7 @@ func NewRouter(ctx context.Context, logFactory log.Factory, options option.Route
 		pauseManager:          service.FromContext[pause.Manager](ctx),
 		platformInterface:     service.FromContext[platform.Interface](ctx),
 		needWIFIState:         hasRule(options.Rules, isWIFIRule) || hasDNSRule(dnsOptions.Rules, isWIFIDNSRule),
+		reloadChan:            reloadChan,
 	}
 	service.MustRegister[adapter.Router](ctx, router)
 	router.dnsClient = dns.NewClient(dns.ClientOptions{
@@ -521,5 +523,14 @@ func (r *Router) ResetNetwork() {
 	r.network.ResetNetwork()
 	for _, transport := range r.transports {
 		transport.Reset()
+	}
+}
+
+func (r *Router) Reload() {
+	if r.platformInterface == nil {
+		select {
+		case r.reloadChan <- struct{}{}:
+		default:
+		}
 	}
 }
