@@ -370,6 +370,15 @@ static void emit_original_socket_cookie(
         STACK_ORIGINAL_DST + (int)offsetof(struct sb_ebpf_original_dst, socket_cookie)));
 }
 
+static void emit_original_uid(struct bpf_builder *builder) {
+    emit(builder, BPF_CALL_FUNC(BPF_FUNC_get_current_uid_gid));
+    emit(builder, BPF_STX_MEM(
+        BPF_W,
+        BPF_REG_10,
+        BPF_REG_0,
+        STACK_ORIGINAL_DST + (int)offsetof(struct sb_ebpf_original_dst, uid)));
+}
+
 static void emit_udp_connected_state_reset(
     struct bpf_builder *builder,
     const struct sb_ebpf_inbound_config *config,
@@ -479,6 +488,7 @@ static void emit_redirect_candidate(
         (int)offsetof(struct sb_ebpf_original_dst, flags),
         (int)offsetof(struct sb_ebpf_original_dst, socket_cookie),
         (int)offsetof(struct sb_ebpf_original_dst, socket_cookie) + 4,
+        (int)offsetof(struct sb_ebpf_original_dst, uid),
     };
     size_t compare_count = ipv6
         ? sizeof(struct sb_ebpf_original_dst) / sizeof(uint32_t)
@@ -551,6 +561,12 @@ static void emit_ipv4_redirect_token(
         BPF_REG_10,
         STACK_ORIGINAL_DST + (int)offsetof(struct sb_ebpf_original_dst, socket_cookie) + 4));
     emit(builder, BPF_ALU32_REG_OP(BPF_XOR, BPF_REG_8, BPF_REG_2));
+    emit(builder, BPF_LDX_MEM(
+        BPF_W,
+        BPF_REG_2,
+        BPF_REG_10,
+        STACK_ORIGINAL_DST + (int)offsetof(struct sb_ebpf_original_dst, uid)));
+    emit(builder, BPF_ALU32_REG_OP(BPF_XOR, BPF_REG_8, BPF_REG_2));
     emit_mix32(builder, BPF_REG_8, BPF_REG_2);
 
     size_t success_jumps[SB_EBPF_REDIRECT_TOKEN_ATTEMPTS * 2U];
@@ -618,6 +634,7 @@ static void emit_ipv6_redirect_token(
         (int)offsetof(struct sb_ebpf_original_dst, addr) + 12,
         0,
         (int)offsetof(struct sb_ebpf_original_dst, socket_cookie) + 4,
+        (int)offsetof(struct sb_ebpf_original_dst, uid),
     };
     for (size_t i = 0; i < ARRAY_SIZE(seed8_offsets); ++i) {
         emit(builder, BPF_LDX_MEM(
@@ -1234,6 +1251,7 @@ static void emit_redirect_update_and_rewrite(
     emit(builder, BPF_STX_MEM(BPF_W, BPF_REG_10, BPF_REG_7, STACK_ORIGINAL_DST + (int)offsetof(struct sb_ebpf_original_dst, addr)));
     emit_connected_udp_original_flag(builder, connected_udp);
     emit_original_socket_cookie(builder, protocol == SB_EBPF_PROTO_TCP || connected_udp);
+    emit_original_uid(builder);
     emit_ipv4_redirect_token(
         builder,
         config,
@@ -1353,6 +1371,7 @@ static void emit_redirect_update_and_rewrite_v6(
     emit(builder, BPF_STX_MEM(BPF_W, BPF_REG_10, BPF_REG_4, STACK_ORIGINAL_DST + (int)offsetof(struct sb_ebpf_original_dst, addr) + 12));
     emit_connected_udp_original_flag(builder, connected_udp);
     emit_original_socket_cookie(builder, protocol == SB_EBPF_PROTO_TCP || connected_udp);
+    emit_original_uid(builder);
     emit_ipv6_redirect_token(
         builder, config, redirect_map_fd, entry_stat_index, drop_jumps, drop_jump_count);
     if (connected_udp) {
@@ -1455,6 +1474,7 @@ static void emit_ipv4_mapped_redirect_update_and_rewrite(
     emit(builder, BPF_STX_MEM(BPF_W, BPF_REG_10, BPF_REG_7, STACK_ORIGINAL_DST + (int)offsetof(struct sb_ebpf_original_dst, addr)));
     emit_connected_udp_original_flag(builder, connected_udp);
     emit_original_socket_cookie(builder, protocol == SB_EBPF_PROTO_TCP || connected_udp);
+    emit_original_uid(builder);
     emit_ipv4_redirect_token(
         builder,
         config,

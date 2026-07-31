@@ -203,6 +203,13 @@ sing-box 会把自身创建的 socket 的 `SO_COOKIE` 登记到 eBPF LRU map。c
 程序在重定向前查询此 map，从而避免 sing-box 的出站连接和 UDP listener
 再次被捕获。
 
+对于本机重定向连接，sing-box 会保留 socket 的源端口，并使用发起连接的 UID 查询
+原目标路由，以路由首选源地址替换 listener 所见的 loopback 源 IP。这使
+`source_ip_cidr` 路由规则和 Clash API metadata 保持有效，也能适配 Android 的 UID
+策略路由。如果路由查询失败，
+连接不会被拒绝，而是继续使用 listener 观察到的 loopback 源地址。显式绑定的非
+loopback 源地址会原样保留。
+
 #### shared_network
 
 用于热点或其他共享下游网络的可选转发代理。关闭或省略时，不会创建共享 listener、

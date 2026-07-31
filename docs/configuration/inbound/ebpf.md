@@ -240,6 +240,15 @@ LRU map. The cgroup programs consult this map before redirecting traffic, which
 prevents sing-box outbound connections and UDP listeners from being captured
 again.
 
+For locally redirected connections, sing-box preserves the socket's source
+port and replaces the listener-observed loopback IP with the preferred source
+from the route to the original destination using the originating UID. This
+keeps `source_ip_cidr` route rules and Clash API metadata meaningful, including
+Android UID-based policy routing.
+If the route lookup fails, traffic continues with the listener-observed
+loopback source instead of rejecting the connection. Explicitly bound
+non-loopback source addresses are preserved.
+
 #### shared_network
 
 Optional forwarding proxy for a hotspot or another shared downstream network.

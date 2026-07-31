@@ -674,6 +674,7 @@ func (b *Backend) lookupOriginal(
 	return OriginalDestination{
 		Destination:  netip.AddrPortFrom(address.Unmap(), original.Port),
 		ConnectedUDP: original.Flags&1 != 0,
+		UID:          original.UID,
 	}, nil
 }
 

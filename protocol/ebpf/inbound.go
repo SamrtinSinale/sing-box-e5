@@ -654,6 +654,10 @@ func (i *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata ada
 	metadata.Inbound = i.Tag()
 	metadata.InboundType = i.Type()
 	metadata.Destination = M.SocksaddrFromNetIP(original.Destination)
+	metadata.Source, err = restoreOriginalSource(metadata.Source, original.Destination.Addr(), original.UID)
+	if err != nil {
+		i.logger.DebugContext(ctx, "restore TCP original source: ", err)
+	}
 	i.logger.InfoContext(ctx, "inbound connection to ", metadata.Destination)
 	i.router.RouteConnectionEx(ctx, conn, metadata, onClose)
 }
@@ -680,6 +684,7 @@ func (i *Inbound) NewPacket(buffer *buf.Buffer, oob []byte, source M.Socksaddr) 
 		original.Destination,
 		redirectAddress,
 		original.ConnectedUDP,
+		original.UID,
 	)
 	i.deleteUDPRedirects(releasedRedirects)
 	i.udpNat.NewPacket([][]byte{buffer.Bytes()}, source, M.SocksaddrFromNetIP(original.Destination), original.ConnectedUDP)
@@ -696,8 +701,13 @@ func (i *Inbound) NewPacketConnectionEx(ctx context.Context, conn N.PacketConn, 
 	metadata.InboundDetour = i.listenOptions.Detour
 	if clientState, loaded := i.udpClients.load(source.AddrPort()); loaded {
 		metadata.UDPConnect = clientState.isConnected()
+		var err error
+		metadata.Source, err = restoreOriginalSource(source, destination.Addr, clientState.sourceUID())
+		if err != nil {
+			i.logger.DebugContext(ctx, "restore UDP original source: ", err)
+		}
 	}
-	i.logger.InfoContext(ctx, "inbound packet connection from ", source)
+	i.logger.InfoContext(ctx, "inbound packet connection from ", metadata.Source)
 	i.logger.InfoContext(ctx, "inbound packet connection to ", destination)
 	i.router.RoutePacketConnectionEx(ctx, conn, metadata, onClose)
 }

@@ -14,7 +14,7 @@ func TestUDPClientTableBindings(t *testing.T) {
 	destination := netip.MustParseAddrPort("1.1.1.1:443")
 	redirectAddress := netip.MustParseAddr("127.128.0.1")
 
-	table.setBinding(client, destination, redirectAddress, false)
+	table.setBinding(client, destination, redirectAddress, false, 10001)
 	clientState, loaded := table.load(client)
 	if !loaded {
 		t.Fatal("client state was not created")
@@ -25,6 +25,13 @@ func TestUDPClientTableBindings(t *testing.T) {
 	clientState.setConnected(true)
 	if !clientState.isConnected() {
 		t.Fatal("connected UDP state was not retained")
+	}
+	if uid := clientState.sourceUID(); uid != 10001 {
+		t.Fatalf("unexpected source UID: %d", uid)
+	}
+	table.setBinding(client, destination, redirectAddress, false, 10002)
+	if uid := clientState.sourceUID(); uid != 10002 {
+		t.Fatalf("source UID was not updated with the binding: %d", uid)
 	}
 }
 
@@ -51,7 +58,7 @@ func TestUDPClientTableConcurrentBindings(t *testing.T) {
 		go func(index int) {
 			defer waitGroup.Done()
 			destination := netip.AddrPortFrom(netip.AddrFrom4([4]byte{1, 0, 0, byte(index + 1)}), 443)
-			table.setBinding(client, destination, redirectAddress, false)
+			table.setBinding(client, destination, redirectAddress, false, 0)
 		}(index)
 	}
 	waitGroup.Wait()
@@ -74,8 +81,8 @@ func TestUDPClientTableSharesUnconnectedRedirect(t *testing.T) {
 	client1 := netip.MustParseAddrPort("127.0.0.1:1001")
 	client2 := netip.MustParseAddrPort("127.0.0.1:1002")
 
-	table.setBinding(client1, destination, redirectAddress, false)
-	table.setBinding(client2, destination, redirectAddress, false)
+	table.setBinding(client1, destination, redirectAddress, false, 0)
+	table.setBinding(client2, destination, redirectAddress, false, 0)
 	if references := redirectReferenceCount(&table, redirectAddress); references != 2 {
 		t.Fatalf("unexpected shared redirect references: %d", references)
 	}
@@ -96,7 +103,7 @@ func TestUDPClientTableDoesNotReferenceConnectedRedirect(t *testing.T) {
 	destination := netip.MustParseAddrPort("8.8.8.8:53")
 	redirectAddress := netip.MustParseAddr("127.128.0.4")
 
-	table.setBinding(client, destination, redirectAddress, true)
+	table.setBinding(client, destination, redirectAddress, true, 0)
 	if references := redirectReferenceCount(&table, redirectAddress); references != 0 {
 		t.Fatalf("connected redirect entered userspace reference table: %d", references)
 	}
@@ -113,8 +120,8 @@ func TestUDPClientTableReplacesRedirectReference(t *testing.T) {
 	oldRedirect := netip.MustParseAddr("127.128.0.5")
 	newRedirect := netip.MustParseAddr("127.128.0.6")
 
-	table.setBinding(client, destination, oldRedirect, false)
-	released := table.setBinding(client, destination, newRedirect, false)
+	table.setBinding(client, destination, oldRedirect, false, 0)
+	released := table.setBinding(client, destination, newRedirect, false, 0)
 	if len(released) != 1 || released[0] != oldRedirect {
 		t.Fatalf("old redirect was not released: %v", released)
 	}
@@ -132,8 +139,8 @@ func TestUDPClientTableDuplicateBindingDoesNotRetainTwice(t *testing.T) {
 	destination := netip.MustParseAddrPort("1.0.0.1:53")
 	redirectAddress := netip.MustParseAddr("127.128.0.7")
 
-	table.setBinding(client, destination, redirectAddress, false)
-	table.setBinding(client, destination, redirectAddress, false)
+	table.setBinding(client, destination, redirectAddress, false, 0)
+	table.setBinding(client, destination, redirectAddress, false, 0)
 	if references := redirectReferenceCount(&table, redirectAddress); references != 1 {
 		t.Fatalf("duplicate packet changed redirect references: %d", references)
 	}
@@ -151,7 +158,7 @@ func TestUDPClientTableConcurrentReleaseSelectsRedirectOnce(t *testing.T) {
 			netip.AddrFrom4([4]byte{127, 0, 0, 1}),
 			uint16(5000+index),
 		)
-		table.setBinding(clients[index], destination, redirectAddress, false)
+		table.setBinding(clients[index], destination, redirectAddress, false, 0)
 		states[index], _ = table.load(clients[index])
 	}
 

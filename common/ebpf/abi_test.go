@@ -10,7 +10,7 @@ func TestRedirectABI(t *testing.T) {
 	if size := unsafe.Sizeof(redirectKey{}); size != 20 {
 		t.Fatalf("unexpected redirect key size: %d", size)
 	}
-	if size := unsafe.Sizeof(originalDestination{}); size != 32 {
+	if size := unsafe.Sizeof(originalDestination{}); size != 40 {
 		t.Fatalf("unexpected original destination size: %d", size)
 	}
 	if offset := unsafe.Offsetof(redirectKey{}.RedirectAddr); offset != 4 {
@@ -24,6 +24,9 @@ func TestRedirectABI(t *testing.T) {
 	}
 	if offset := unsafe.Offsetof(originalDestination{}.SocketCookie); offset != 24 {
 		t.Fatalf("unexpected socket cookie offset: %d", offset)
+	}
+	if offset := unsafe.Offsetof(originalDestination{}.UID); offset != 32 {
+		t.Fatalf("unexpected UID offset: %d", offset)
 	}
 
 	key, err := makeRedirectKey(

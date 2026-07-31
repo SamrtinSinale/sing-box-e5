@@ -28,6 +28,7 @@ type RuntimeStats struct {
 type OriginalDestination struct {
 	Destination  netip.AddrPort
 	ConnectedUDP bool
+	UID          uint32
 }
 
 type redirectKey struct {
@@ -45,6 +46,8 @@ type originalDestination struct {
 	Flags        uint8
 	Reserved     [3]byte
 	SocketCookie uint64
+	UID          uint32
+	ReservedTail uint32
 }
 
 func makeRedirectKey(protocol uint8, redirect netip.AddrPort) (redirectKey, error) {

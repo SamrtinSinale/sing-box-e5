@@ -48,6 +48,8 @@ struct sb_ebpf_original_dst {
     uint8_t flags;
     uint8_t reserved[3];
     uint64_t socket_cookie;
+    uint32_t uid;
+    uint32_t reserved_tail;
 };
 
 struct sb_ebpf_udp_peer_key {
@@ -62,8 +64,9 @@ struct sb_ebpf_udp_peer_value {
 };
 
 _Static_assert(sizeof(struct sb_ebpf_redirect_key) == 20U, "unexpected redirect key ABI");
-_Static_assert(sizeof(struct sb_ebpf_original_dst) == 32U, "unexpected original destination ABI");
+_Static_assert(sizeof(struct sb_ebpf_original_dst) == 40U, "unexpected original destination ABI");
 _Static_assert(offsetof(struct sb_ebpf_original_dst, socket_cookie) == 24U, "unexpected socket cookie ABI");
+_Static_assert(offsetof(struct sb_ebpf_original_dst, uid) == 32U, "unexpected UID ABI");
 _Static_assert(sizeof(struct sb_ebpf_udp_peer_key) == 8U, "unexpected UDP peer key ABI");
 _Static_assert(sizeof(struct sb_ebpf_udp_peer_value) == 20U, "unexpected UDP peer value ABI");
 

@@ -3,10 +3,93 @@
 package ebpf
 
 import (
+	"errors"
 	"net"
 	"net/netip"
 	"testing"
+
+	"github.com/sagernet/netlink"
+	M "github.com/sagernet/sing/common/metadata"
 )
+
+func TestRestoreOriginalSource(t *testing.T) {
+	source := M.SocksaddrFrom(netip.MustParseAddr("127.0.0.1"), 23456)
+	destination := netip.MustParseAddr("1.1.1.1")
+	result, err := restoreOriginalSourceWithRouteGet(source, destination, 10001, func(
+		lookupDestination net.IP,
+		options *netlink.RouteGetOptions,
+	) ([]netlink.Route, error) {
+		if !lookupDestination.Equal(net.ParseIP("1.1.1.1")) {
+			t.Fatalf("unexpected route destination: %s", lookupDestination)
+		}
+		if options == nil || options.UID == nil || *options.UID != 10001 {
+			t.Fatalf("unexpected route UID options: %+v", options)
+		}
+		return []netlink.Route{{Src: net.ParseIP("192.0.2.10")}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != M.SocksaddrFrom(netip.MustParseAddr("192.0.2.10"), 23456) {
+		t.Fatalf("unexpected restored source: %s", result)
+	}
+}
+
+func TestRestoreOriginalSourceIPv6(t *testing.T) {
+	source := M.SocksaddrFrom(netip.IPv6Loopback(), 34567)
+	result, err := restoreOriginalSourceWithRouteGet(
+		source,
+		netip.MustParseAddr("2001:db8::1"),
+		0,
+		func(net.IP, *netlink.RouteGetOptions) ([]netlink.Route, error) {
+			return []netlink.Route{{Src: net.ParseIP("2001:db8::10")}}, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != M.SocksaddrFrom(netip.MustParseAddr("2001:db8::10"), 34567) {
+		t.Fatalf("unexpected restored source: %s", result)
+	}
+}
+
+func TestRestoreOriginalSourcePreservesBoundAddress(t *testing.T) {
+	source := M.SocksaddrFrom(netip.MustParseAddr("192.0.2.20"), 45678)
+	called := false
+	result, err := restoreOriginalSourceWithRouteGet(
+		source,
+		netip.MustParseAddr("1.1.1.1"),
+		10001,
+		func(net.IP, *netlink.RouteGetOptions) ([]netlink.Route, error) {
+			called = true
+			return nil, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called || result != source {
+		t.Fatalf("explicit source was not preserved: %s", result)
+	}
+}
+
+func TestRestoreOriginalSourceFallback(t *testing.T) {
+	source := M.SocksaddrFrom(netip.MustParseAddr("127.0.0.1"), 56789)
+	result, err := restoreOriginalSourceWithRouteGet(
+		source,
+		netip.MustParseAddr("1.1.1.1"),
+		10001,
+		func(net.IP, *netlink.RouteGetOptions) ([]netlink.Route, error) {
+			return nil, errors.New("route lookup failed")
+		},
+	)
+	if err == nil {
+		t.Fatal("expected route lookup failure")
+	}
+	if result != source {
+		t.Fatalf("source changed after lookup failure: %s", result)
+	}
+}
 
 func TestRoutePrefixContains(t *testing.T) {
 	tests := []struct {
