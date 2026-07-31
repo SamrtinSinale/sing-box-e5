@@ -165,6 +165,31 @@ func TestUDPClientTableDuplicateBindingDoesNotRetainTwice(t *testing.T) {
 	}
 }
 
+func TestUDPClientTableCachesOriginalByClientAndToken(t *testing.T) {
+	var table udpClientTable
+	client := netip.MustParseAddrPort("192.168.43.10:4001")
+	otherClient := netip.MustParseAddrPort("192.168.43.11:4001")
+	destination := netip.MustParseAddrPort("1.0.0.1:53")
+	redirectAddress := netip.MustParseAddr("127.128.0.7")
+
+	if _, loaded := table.cachedOriginal(client, redirectAddress); loaded {
+		t.Fatal("original destination was cached before binding")
+	}
+	table.setBinding(client, destination, redirectAddress, false, 10001)
+	cached, loaded := table.cachedOriginal(client, redirectAddress)
+	if !loaded || cached.original.Destination != destination || cached.original.UID != 10001 {
+		t.Fatalf("unexpected cached original destination: %+v, %v", cached, loaded)
+	}
+	if _, loaded = table.cachedOriginal(otherClient, redirectAddress); loaded {
+		t.Fatal("original destination cache leaked to another client")
+	}
+	state, _ := table.load(client)
+	table.delete(client, state)
+	if _, loaded = table.cachedOriginal(client, redirectAddress); loaded {
+		t.Fatal("original destination cache survived session deletion")
+	}
+}
+
 func TestUDPClientTableConcurrentReleaseSelectsRedirectOnce(t *testing.T) {
 	var table udpClientTable
 	destination := netip.MustParseAddrPort("8.8.4.4:53")

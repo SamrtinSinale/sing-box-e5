@@ -303,10 +303,15 @@ func (s *sharedNetwork) NewPacket(buffer *buf.Buffer, oob []byte, source M.Socks
 	}
 	client := source.AddrPort()
 	redirect := netip.AddrPortFrom(redirectAddress, s.listenPort)
-	original, flow, err := s.backend.LookupFlow(ECommon.ProtocolUDP, client, redirect)
-	if err != nil {
-		s.parent.logger.Warn("lookup shared-network UDP original destination: ", err)
-		return
+	cached, loaded := s.udpClients.cachedOriginal(client, redirectAddress)
+	original := cached.original
+	flow := cached.sharedFlow
+	if !loaded {
+		original, flow, err = s.backend.LookupFlow(ECommon.ProtocolUDP, client, redirect)
+		if err != nil {
+			s.parent.logger.Warn("lookup shared-network UDP original destination: ", err)
+			return
+		}
 	}
 	released := s.udpClients.setSharedBinding(client, original.Destination, redirectAddress, flow)
 	s.releaseFlows(released)

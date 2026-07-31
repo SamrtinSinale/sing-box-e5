@@ -21,6 +21,7 @@ type udpClientState struct {
 	connected bool
 	uid       uint32
 	bindings  map[netip.AddrPort]udpRedirectBinding
+	originals map[netip.Addr]udpOriginalDestination
 }
 
 type udpRedirectBinding struct {
@@ -37,6 +38,11 @@ type udpRedirectReference struct {
 
 type udpRedirectRelease struct {
 	reference  udpRedirectReference
+	sharedFlow *ECommon.SharedNetworkFlow
+}
+
+type udpOriginalDestination struct {
+	original   ECommon.OriginalDestination
 	sharedFlow *ECommon.SharedNetworkFlow
 }
 
@@ -63,9 +69,23 @@ func (t *udpClientTable) loadOrCreateLocked(client netip.AddrPort) *udpClientSta
 	if t.clients == nil {
 		t.clients = make(map[netip.AddrPort]*udpClientState)
 	}
-	clientState := &udpClientState{bindings: make(map[netip.AddrPort]udpRedirectBinding)}
+	clientState := &udpClientState{
+		bindings:  make(map[netip.AddrPort]udpRedirectBinding),
+		originals: make(map[netip.Addr]udpOriginalDestination),
+	}
 	t.clients[client] = clientState
 	return clientState
+}
+
+func (t *udpClientTable) cachedOriginal(client netip.AddrPort, redirectAddress netip.Addr) (udpOriginalDestination, bool) {
+	clientState, loaded := t.load(client)
+	if !loaded {
+		return udpOriginalDestination{}, false
+	}
+	clientState.access.RLock()
+	original, loaded := clientState.originals[redirectAddress]
+	clientState.access.RUnlock()
+	return original, loaded
 }
 
 func (t *udpClientTable) setBinding(
@@ -77,12 +97,15 @@ func (t *udpClientTable) setBinding(
 ) []netip.Addr {
 	releases := t.setBinding0(
 		client,
-		destination,
 		redirectAddress,
-		connected,
-		uid,
 		udpRedirectReference{address: redirectAddress},
-		nil,
+		udpOriginalDestination{
+			original: ECommon.OriginalDestination{
+				Destination:  destination,
+				ConnectedUDP: connected,
+				UID:          uid,
+			},
+		},
 	)
 	addresses := make([]netip.Addr, 0, len(releases))
 	for _, release := range releases {
@@ -99,30 +122,25 @@ func (t *udpClientTable) setSharedBinding(
 ) []udpRedirectRelease {
 	return t.setBinding0(
 		client,
-		destination,
 		redirectAddress,
-		false,
-		0,
 		udpRedirectReference{client: client, address: redirectAddress},
-		flow,
+		udpOriginalDestination{
+			original:   ECommon.OriginalDestination{Destination: destination},
+			sharedFlow: flow,
+		},
 	)
 }
 
 func (t *udpClientTable) setBinding0(
 	client netip.AddrPort,
-	destination netip.AddrPort,
 	redirectAddress netip.Addr,
-	connected bool,
-	uid uint32,
 	reference udpRedirectReference,
-	sharedFlow *ECommon.SharedNetworkFlow,
+	original udpOriginalDestination,
 ) []udpRedirectRelease {
 	t.access.RLock()
 	clientState, loaded := t.clients[client]
 	if loaded {
-		released := t.setClientBinding(
-			clientState, destination, redirectAddress, connected, uid, reference, sharedFlow,
-		)
+		released := t.setClientBinding(clientState, redirectAddress, reference, original)
 		t.access.RUnlock()
 		return released
 	}
@@ -130,22 +148,20 @@ func (t *udpClientTable) setBinding0(
 
 	t.access.Lock()
 	clientState = t.loadOrCreateLocked(client)
-	released := t.setClientBinding(
-		clientState, destination, redirectAddress, connected, uid, reference, sharedFlow,
-	)
+	released := t.setClientBinding(clientState, redirectAddress, reference, original)
 	t.access.Unlock()
 	return released
 }
 
 func (t *udpClientTable) setClientBinding(
 	clientState *udpClientState,
-	destination netip.AddrPort,
 	redirectAddress netip.Addr,
-	connected bool,
-	uid uint32,
 	reference udpRedirectReference,
-	sharedFlow *ECommon.SharedNetworkFlow,
+	original udpOriginalDestination,
 ) []udpRedirectRelease {
+	destination := original.original.Destination
+	connected := original.original.ConnectedUDP
+	uid := original.original.UID
 	clientState.access.RLock()
 	current, loaded := clientState.bindings[destination]
 	uidMatches := clientState.uid == uid
@@ -158,6 +174,7 @@ func (t *udpClientTable) setClientBinding(
 	defer clientState.access.Unlock()
 	current, loaded = clientState.bindings[destination]
 	clientState.uid = uid
+	clientState.originals[redirectAddress] = original
 	if loaded && current.address == redirectAddress && current.connected == connected {
 		return nil
 	}
@@ -165,7 +182,7 @@ func (t *udpClientTable) setClientBinding(
 		address:    redirectAddress,
 		connected:  connected,
 		reference:  reference,
-		sharedFlow: sharedFlow,
+		sharedFlow: original.sharedFlow,
 	}
 
 	t.redirectAccess.Lock()
@@ -217,6 +234,7 @@ func (t *udpClientTable) delete0(client netip.AddrPort, expected *udpClientState
 		}
 	}
 	clear(expected.bindings)
+	clear(expected.originals)
 	return released
 }
 

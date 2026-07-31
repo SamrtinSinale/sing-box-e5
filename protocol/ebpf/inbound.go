@@ -669,10 +669,14 @@ func (i *Inbound) NewPacket(buffer *buf.Buffer, oob []byte, source M.Socksaddr) 
 	}
 	client := source.AddrPort()
 	redirectDestination := netip.AddrPortFrom(redirectAddress, i.listenPort)
-	original, err := backend.LookupOriginal(ECommon.ProtocolUDP, redirectDestination)
-	if err != nil {
-		i.logger.Warn("lookup UDP original destination: ", err)
-		return
+	cached, loaded := i.udpClients.cachedOriginal(client, redirectAddress)
+	original := cached.original
+	if !loaded {
+		original, err = backend.LookupOriginal(ECommon.ProtocolUDP, redirectDestination)
+		if err != nil {
+			i.logger.Warn("lookup UDP original destination: ", err)
+			return
+		}
 	}
 	releasedRedirects := i.udpClients.setBinding(
 		client,
