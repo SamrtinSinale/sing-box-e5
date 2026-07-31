@@ -16,15 +16,6 @@ const (
 	addressFamilyIPv6 = 10
 )
 
-type RuntimeStats struct {
-	TCPRedirectEntries uint64
-	UDPRedirectEntries uint64
-	TokenCollisions    uint64
-	MapUpdateFailures  uint64
-	RedirectDrops      uint64
-	LookupMisses       uint64
-}
-
 type OriginalDestination struct {
 	Destination  netip.AddrPort
 	ConnectedUDP bool

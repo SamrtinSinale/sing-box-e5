@@ -43,7 +43,6 @@
 #define BPF_MOV32_REG(DST, SRC) BPF_ALU32_REG_OP(BPF_MOV, DST, SRC)
 #define BPF_ST_MEM(SIZE, DST, OFF, IMM) ((struct bpf_insn){.code = BPF_ST | BPF_SIZE(SIZE) | BPF_MEM, .dst_reg = DST, .off = OFF, .imm = (int32_t)(IMM)})
 #define BPF_STX_MEM(SIZE, DST, SRC, OFF) ((struct bpf_insn){.code = BPF_STX | BPF_SIZE(SIZE) | BPF_MEM, .dst_reg = DST, .src_reg = SRC, .off = OFF})
-#define BPF_STX_XADD(SIZE, DST, SRC, OFF) ((struct bpf_insn){.code = BPF_STX | BPF_SIZE(SIZE) | BPF_XADD, .dst_reg = DST, .src_reg = SRC, .off = OFF})
 #define BPF_LDX_MEM(SIZE, DST, SRC, OFF) ((struct bpf_insn){.code = BPF_LDX | BPF_SIZE(SIZE) | BPF_MEM, .dst_reg = DST, .src_reg = SRC, .off = OFF})
 #define BPF_JMP_IMM_OP(OP, DST, IMM, OFF) ((struct bpf_insn){.code = BPF_JMP | BPF_OP(OP) | BPF_K, .dst_reg = DST, .off = OFF, .imm = (int32_t)(IMM)})
 #define BPF_JMP_REG_OP(OP, DST, SRC, OFF) ((struct bpf_insn){.code = BPF_JMP | BPF_OP(OP) | BPF_X, .dst_reg = DST, .src_reg = SRC, .off = OFF})
@@ -64,7 +63,6 @@ enum {
     STACK_COOKIE_KEY = -232,
     STACK_UID_KEY = -240,
     STACK_BYPASS_CIDR_KEY = -272,
-    STACK_STATS_KEY = -280,
 };
 
 struct bpf_builder {
@@ -245,15 +243,6 @@ static int create_redirect_map(uint32_t max_entries) {
         0U);
 }
 
-static int create_stats_map(void) {
-    return sb_ebpf_create_map(
-        (enum bpf_map_type)SB_EBPF_ARRAY_MAP_TYPE,
-        sizeof(uint32_t),
-        sizeof(uint64_t),
-        SB_EBPF_STATS_COUNT,
-        0U);
-}
-
 static int create_udp_peer_map(uint32_t max_entries) {
     return sb_ebpf_create_map(
         (enum bpf_map_type)SB_EBPF_LRU_HASH_MAP_TYPE,
@@ -307,30 +296,12 @@ static void emit_zero_region(struct bpf_builder *builder, int base_off, size_t s
     }
 }
 
-static void emit_stat_increment(
-    struct bpf_builder *builder,
-    const struct sb_ebpf_inbound_config *config,
-    enum sb_ebpf_stat_index index) {
-    if (config->stats_map_fd < 0) return;
-    emit(builder, BPF_ST_MEM(BPF_W, BPF_REG_10, STACK_STATS_KEY, index));
-    emit_ld_map_fd(builder, BPF_REG_1, config->stats_map_fd);
-    emit(builder, BPF_MOV64_REG(BPF_REG_2, BPF_REG_10));
-    emit(builder, BPF_ALU64_IMM_OP(BPF_ADD, BPF_REG_2, STACK_STATS_KEY));
-    emit(builder, BPF_CALL_FUNC(BPF_FUNC_map_lookup_elem));
-    size_t missing = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_0, 0, 0));
-    emit(builder, BPF_MOV64_IMM(BPF_REG_1, 1));
-    emit(builder, BPF_STX_XADD(BPF_DW, BPF_REG_0, BPF_REG_1, 0));
-    patch_jump(builder, missing, builder->count);
-}
-
 static void emit_udp_redirect_delete_from_stack(
     struct bpf_builder *builder,
-    const struct sb_ebpf_inbound_config *config,
     int udp_redirect_map_fd);
 
 static void emit_udp_redirect_delete_from_reg(
     struct bpf_builder *builder,
-    const struct sb_ebpf_inbound_config *config,
     int udp_redirect_map_fd,
     int key_reg) {
     for (size_t offset = 0; offset < sizeof(struct sb_ebpf_redirect_key); offset += sizeof(uint32_t)) {
@@ -341,20 +312,16 @@ static void emit_udp_redirect_delete_from_reg(
             BPF_REG_2,
             STACK_REDIRECT_KEY + (int)offset));
     }
-    emit_udp_redirect_delete_from_stack(builder, config, udp_redirect_map_fd);
+    emit_udp_redirect_delete_from_stack(builder, udp_redirect_map_fd);
 }
 
 static void emit_udp_redirect_delete_from_stack(
     struct bpf_builder *builder,
-    const struct sb_ebpf_inbound_config *config,
     int udp_redirect_map_fd) {
     emit_ld_map_fd(builder, BPF_REG_1, udp_redirect_map_fd);
     emit(builder, BPF_MOV64_REG(BPF_REG_2, BPF_REG_10));
     emit(builder, BPF_ALU64_IMM_OP(BPF_ADD, BPF_REG_2, STACK_REDIRECT_KEY));
     emit(builder, BPF_CALL_FUNC(BPF_FUNC_map_delete_elem));
-    size_t delete_failed = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JNE, BPF_REG_0, 0, 0));
-    emit_stat_increment(builder, config, SB_EBPF_STAT_UDP_REDIRECT_DELETES);
-    patch_jump(builder, delete_failed, builder->count);
 }
 
 static void emit_original_socket_cookie(
@@ -381,7 +348,6 @@ static void emit_original_uid(struct bpf_builder *builder) {
 
 static void emit_udp_connected_state_reset(
     struct bpf_builder *builder,
-    const struct sb_ebpf_inbound_config *config,
     int udp_redirect_map_fd,
     int udp_token_map_fd,
     int udp_peer_map_fd) {
@@ -397,7 +363,7 @@ static void emit_udp_connected_state_reset(
     emit(builder, BPF_ALU64_IMM_OP(BPF_ADD, BPF_REG_2, STACK_COOKIE_KEY));
     emit(builder, BPF_CALL_FUNC(BPF_FUNC_map_lookup_elem));
     size_t no_token = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_0, 0, 0));
-    emit_udp_redirect_delete_from_reg(builder, config, udp_redirect_map_fd, BPF_REG_0);
+    emit_udp_redirect_delete_from_reg(builder, udp_redirect_map_fd, BPF_REG_0);
     patch_jump(builder, no_token, builder->count);
 
     emit_ld_map_fd(builder, BPF_REG_1, udp_token_map_fd);
@@ -415,14 +381,12 @@ static void emit_udp_connected_state_reset(
 
 static void emit_udp_token_update(
     struct bpf_builder *builder,
-    const struct sb_ebpf_inbound_config *config,
     int udp_redirect_map_fd,
     int udp_token_map_fd,
     size_t *drop_jumps,
     size_t *drop_jump_count) {
     if (udp_token_map_fd < 0) {
-        emit_udp_redirect_delete_from_stack(builder, config, udp_redirect_map_fd);
-        emit_stat_increment(builder, config, SB_EBPF_STAT_MAP_UPDATE_FAILURES);
+        emit_udp_redirect_delete_from_stack(builder, udp_redirect_map_fd);
         drop_jumps[(*drop_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JA, 0, 0, 0));
         return;
     }
@@ -444,8 +408,7 @@ static void emit_udp_token_update(
     size_t updated = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_0, 0, 0));
     size_t failure_label = builder->count;
     patch_jump(builder, missing_cookie, failure_label);
-    emit_stat_increment(builder, config, SB_EBPF_STAT_MAP_UPDATE_FAILURES);
-    emit_udp_redirect_delete_from_stack(builder, config, udp_redirect_map_fd);
+    emit_udp_redirect_delete_from_stack(builder, udp_redirect_map_fd);
     drop_jumps[(*drop_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JA, 0, 0, 0));
     patch_jump(builder, updated, builder->count);
 }
@@ -466,9 +429,7 @@ static void emit_mix32(struct bpf_builder *builder, int value_reg, int temp_reg)
 
 static void emit_redirect_candidate(
     struct bpf_builder *builder,
-    const struct sb_ebpf_inbound_config *config,
     int redirect_map_fd,
-    enum sb_ebpf_stat_index entry_stat_index,
     bool ipv6,
     size_t *next_jumps,
     size_t *next_jump_count,
@@ -515,29 +476,24 @@ static void emit_redirect_candidate(
     emit(builder, BPF_MOV64_IMM(BPF_REG_4, BPF_NOEXIST));
     emit(builder, BPF_CALL_FUNC(BPF_FUNC_map_update_elem));
     size_t inserted = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_0, 0, 0));
-    emit_stat_increment(builder, config, SB_EBPF_STAT_MAP_UPDATE_FAILURES);
     next_jumps[(*next_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JA, 0, 0, 0));
 
     size_t inserted_label = builder->count;
     patch_jump(builder, inserted, inserted_label);
-    emit_stat_increment(builder, config, entry_stat_index);
     success_jumps[(*success_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JA, 0, 0, 0));
 
     size_t collision_label = builder->count;
     for (size_t index = 0; index < collision_jump_count; ++index) {
         patch_jump(builder, collision_jumps[index], collision_label);
     }
-    emit_stat_increment(builder, config, SB_EBPF_STAT_TOKEN_COLLISIONS);
     next_jumps[(*next_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JA, 0, 0, 0));
 }
 
 static void emit_ipv4_redirect_token(
     struct bpf_builder *builder,
-    const struct sb_ebpf_inbound_config *config,
     uint32_t redirect_prefix,
     uint32_t redirect_host_mask,
     int redirect_map_fd,
-    enum sb_ebpf_stat_index entry_stat_index,
     size_t *drop_jumps,
     size_t *drop_jump_count) {
     emit(builder, BPF_MOV32_REG(BPF_REG_8, BPF_REG_7));
@@ -586,9 +542,7 @@ static void emit_ipv4_redirect_token(
         size_t next_jump_count = 0;
         emit_redirect_candidate(
             builder,
-            config,
             redirect_map_fd,
-            entry_stat_index,
             false,
             next_jumps,
             &next_jump_count,
@@ -601,7 +555,6 @@ static void emit_ipv4_redirect_token(
         if (attempt + 1U < SB_EBPF_REDIRECT_TOKEN_ATTEMPTS) {
             emit(builder, BPF_ALU32_IMM_OP(BPF_ADD, BPF_REG_8, 0x9e3779b9U));
         } else {
-            emit_stat_increment(builder, config, SB_EBPF_STAT_REDIRECT_DROPS);
             drop_jumps[(*drop_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JA, 0, 0, 0));
         }
     }
@@ -613,9 +566,7 @@ static void emit_ipv4_redirect_token(
 
 static void emit_ipv6_redirect_token(
     struct bpf_builder *builder,
-    const struct sb_ebpf_inbound_config *config,
     int redirect_map_fd,
-    enum sb_ebpf_stat_index entry_stat_index,
     size_t *drop_jumps,
     size_t *drop_jump_count) {
     emit(builder, BPF_LDX_MEM(BPF_W, BPF_REG_8, BPF_REG_10, STACK_ORIGINAL_DST));
@@ -674,9 +625,7 @@ static void emit_ipv6_redirect_token(
         size_t next_jump_count = 0;
         emit_redirect_candidate(
             builder,
-            config,
             redirect_map_fd,
-            entry_stat_index,
             true,
             next_jumps,
             &next_jump_count,
@@ -690,7 +639,6 @@ static void emit_ipv6_redirect_token(
             emit(builder, BPF_ALU32_IMM_OP(BPF_ADD, BPF_REG_8, 0x9e3779b9U));
             emit(builder, BPF_ALU32_IMM_OP(BPF_ADD, BPF_REG_9, 0x7f4a7c15U));
         } else {
-            emit_stat_increment(builder, config, SB_EBPF_STAT_REDIRECT_DROPS);
             drop_jumps[(*drop_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JA, 0, 0, 0));
         }
     }
@@ -1225,7 +1173,6 @@ static void emit_redirect_update_and_rewrite(
     const struct sb_ebpf_inbound_config *config,
     int redirect_map_fd,
     int udp_token_map_fd,
-    enum sb_ebpf_stat_index entry_stat_index,
     uint8_t protocol,
     bool connected_udp,
     uint16_t listen_port,
@@ -1254,17 +1201,14 @@ static void emit_redirect_update_and_rewrite(
     emit_original_uid(builder);
     emit_ipv4_redirect_token(
         builder,
-        config,
         redirect_prefix,
         redirect_host_mask,
         redirect_map_fd,
-        entry_stat_index,
         drop_jumps,
         drop_jump_count);
     if (connected_udp) {
         emit_udp_token_update(
             builder,
-            config,
             redirect_map_fd,
             udp_token_map_fd,
             drop_jumps,
@@ -1292,9 +1236,6 @@ static void emit_redirect_update_and_rewrite_by_protocol(
             config,
             protocol == SB_EBPF_PROTO_UDP ? udp_redirect_map_fd : tcp_redirect_map_fd,
             udp_token_map_fd,
-            protocol == SB_EBPF_PROTO_UDP
-                ? SB_EBPF_STAT_UDP_REDIRECT_ENTRIES
-                : SB_EBPF_STAT_TCP_REDIRECT_ENTRIES,
             protocol,
             false,
             listen_port,
@@ -1304,25 +1245,25 @@ static void emit_redirect_update_and_rewrite_by_protocol(
     }
     if (tcp_redirect_map_fd < 0) {
         emit_redirect_update_and_rewrite(
-            builder, config, udp_redirect_map_fd, udp_token_map_fd, SB_EBPF_STAT_UDP_REDIRECT_ENTRIES,
+            builder, config, udp_redirect_map_fd, udp_token_map_fd,
             SB_EBPF_PROTO_UDP, true, listen_port, drop_jumps, drop_jump_count);
         return;
     }
     if (udp_redirect_map_fd < 0) {
         emit_redirect_update_and_rewrite(
-            builder, config, tcp_redirect_map_fd, udp_token_map_fd, SB_EBPF_STAT_TCP_REDIRECT_ENTRIES,
+            builder, config, tcp_redirect_map_fd, udp_token_map_fd,
             SB_EBPF_PROTO_TCP, false, listen_port, drop_jumps, drop_jump_count);
         return;
     }
     emit(builder, BPF_LDX_MEM(BPF_W, BPF_REG_2, BPF_REG_6, offsetof(struct bpf_sock_addr, type)));
     size_t udp_branch = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_2, SOCK_DGRAM, 0));
     emit_redirect_update_and_rewrite(
-        builder, config, tcp_redirect_map_fd, udp_token_map_fd, SB_EBPF_STAT_TCP_REDIRECT_ENTRIES,
+        builder, config, tcp_redirect_map_fd, udp_token_map_fd,
         SB_EBPF_PROTO_TCP, false, listen_port, drop_jumps, drop_jump_count);
     size_t done = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JA, 0, 0, 0));
     patch_jump(builder, udp_branch, builder->count);
     emit_redirect_update_and_rewrite(
-        builder, config, udp_redirect_map_fd, udp_token_map_fd, SB_EBPF_STAT_UDP_REDIRECT_ENTRIES,
+        builder, config, udp_redirect_map_fd, udp_token_map_fd,
         SB_EBPF_PROTO_UDP, true, listen_port, drop_jumps, drop_jump_count);
     patch_jump(builder, done, builder->count);
 }
@@ -1332,7 +1273,6 @@ static void emit_redirect_update_and_rewrite_v6(
     const struct sb_ebpf_inbound_config *config,
     int redirect_map_fd,
     int udp_token_map_fd,
-    enum sb_ebpf_stat_index entry_stat_index,
     uint8_t protocol,
     bool connected_udp,
     uint16_t listen_port,
@@ -1373,11 +1313,10 @@ static void emit_redirect_update_and_rewrite_v6(
     emit_original_socket_cookie(builder, protocol == SB_EBPF_PROTO_TCP || connected_udp);
     emit_original_uid(builder);
     emit_ipv6_redirect_token(
-        builder, config, redirect_map_fd, entry_stat_index, drop_jumps, drop_jump_count);
+        builder, redirect_map_fd, drop_jumps, drop_jump_count);
     if (connected_udp) {
         emit_udp_token_update(
             builder,
-            config,
             redirect_map_fd,
             udp_token_map_fd,
             drop_jumps,
@@ -1408,9 +1347,6 @@ static void emit_redirect_update_and_rewrite_v6_by_protocol(
             config,
             protocol == SB_EBPF_PROTO_UDP ? udp_redirect_map_fd : tcp_redirect_map_fd,
             udp_token_map_fd,
-            protocol == SB_EBPF_PROTO_UDP
-                ? SB_EBPF_STAT_UDP_REDIRECT_ENTRIES
-                : SB_EBPF_STAT_TCP_REDIRECT_ENTRIES,
             protocol,
             false,
             listen_port,
@@ -1420,25 +1356,25 @@ static void emit_redirect_update_and_rewrite_v6_by_protocol(
     }
     if (tcp_redirect_map_fd < 0) {
         emit_redirect_update_and_rewrite_v6(
-            builder, config, udp_redirect_map_fd, udp_token_map_fd, SB_EBPF_STAT_UDP_REDIRECT_ENTRIES,
+            builder, config, udp_redirect_map_fd, udp_token_map_fd,
             SB_EBPF_PROTO_UDP, true, listen_port, drop_jumps, drop_jump_count);
         return;
     }
     if (udp_redirect_map_fd < 0) {
         emit_redirect_update_and_rewrite_v6(
-            builder, config, tcp_redirect_map_fd, udp_token_map_fd, SB_EBPF_STAT_TCP_REDIRECT_ENTRIES,
+            builder, config, tcp_redirect_map_fd, udp_token_map_fd,
             SB_EBPF_PROTO_TCP, false, listen_port, drop_jumps, drop_jump_count);
         return;
     }
     emit(builder, BPF_LDX_MEM(BPF_W, BPF_REG_2, BPF_REG_6, offsetof(struct bpf_sock_addr, type)));
     size_t udp_branch = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_2, SOCK_DGRAM, 0));
     emit_redirect_update_and_rewrite_v6(
-        builder, config, tcp_redirect_map_fd, udp_token_map_fd, SB_EBPF_STAT_TCP_REDIRECT_ENTRIES,
+        builder, config, tcp_redirect_map_fd, udp_token_map_fd,
         SB_EBPF_PROTO_TCP, false, listen_port, drop_jumps, drop_jump_count);
     size_t done = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JA, 0, 0, 0));
     patch_jump(builder, udp_branch, builder->count);
     emit_redirect_update_and_rewrite_v6(
-        builder, config, udp_redirect_map_fd, udp_token_map_fd, SB_EBPF_STAT_UDP_REDIRECT_ENTRIES,
+        builder, config, udp_redirect_map_fd, udp_token_map_fd,
         SB_EBPF_PROTO_UDP, true, listen_port, drop_jumps, drop_jump_count);
     patch_jump(builder, done, builder->count);
 }
@@ -1448,7 +1384,6 @@ static void emit_ipv4_mapped_redirect_update_and_rewrite(
     const struct sb_ebpf_inbound_config *config,
     int redirect_map_fd,
     int udp_token_map_fd,
-    enum sb_ebpf_stat_index entry_stat_index,
     uint8_t protocol,
     bool connected_udp,
     uint16_t listen_port,
@@ -1477,17 +1412,14 @@ static void emit_ipv4_mapped_redirect_update_and_rewrite(
     emit_original_uid(builder);
     emit_ipv4_redirect_token(
         builder,
-        config,
         redirect_prefix,
         redirect_host_mask,
         redirect_map_fd,
-        entry_stat_index,
         drop_jumps,
         drop_jump_count);
     if (connected_udp) {
         emit_udp_token_update(
             builder,
-            config,
             redirect_map_fd,
             udp_token_map_fd,
             drop_jumps,
@@ -1518,9 +1450,6 @@ static void emit_ipv4_mapped_redirect_update_and_rewrite_by_protocol(
             config,
             protocol == SB_EBPF_PROTO_UDP ? udp_redirect_map_fd : tcp_redirect_map_fd,
             udp_token_map_fd,
-            protocol == SB_EBPF_PROTO_UDP
-                ? SB_EBPF_STAT_UDP_REDIRECT_ENTRIES
-                : SB_EBPF_STAT_TCP_REDIRECT_ENTRIES,
             protocol,
             false,
             listen_port,
@@ -1530,25 +1459,25 @@ static void emit_ipv4_mapped_redirect_update_and_rewrite_by_protocol(
     }
     if (tcp_redirect_map_fd < 0) {
         emit_ipv4_mapped_redirect_update_and_rewrite(
-            builder, config, udp_redirect_map_fd, udp_token_map_fd, SB_EBPF_STAT_UDP_REDIRECT_ENTRIES,
+            builder, config, udp_redirect_map_fd, udp_token_map_fd,
             SB_EBPF_PROTO_UDP, true, listen_port, drop_jumps, drop_jump_count);
         return;
     }
     if (udp_redirect_map_fd < 0) {
         emit_ipv4_mapped_redirect_update_and_rewrite(
-            builder, config, tcp_redirect_map_fd, udp_token_map_fd, SB_EBPF_STAT_TCP_REDIRECT_ENTRIES,
+            builder, config, tcp_redirect_map_fd, udp_token_map_fd,
             SB_EBPF_PROTO_TCP, false, listen_port, drop_jumps, drop_jump_count);
         return;
     }
     emit(builder, BPF_LDX_MEM(BPF_W, BPF_REG_2, BPF_REG_6, offsetof(struct bpf_sock_addr, type)));
     size_t udp_branch = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_2, SOCK_DGRAM, 0));
     emit_ipv4_mapped_redirect_update_and_rewrite(
-        builder, config, tcp_redirect_map_fd, udp_token_map_fd, SB_EBPF_STAT_TCP_REDIRECT_ENTRIES,
+        builder, config, tcp_redirect_map_fd, udp_token_map_fd,
         SB_EBPF_PROTO_TCP, false, listen_port, drop_jumps, drop_jump_count);
     size_t done = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JA, 0, 0, 0));
     patch_jump(builder, udp_branch, builder->count);
     emit_ipv4_mapped_redirect_update_and_rewrite(
-        builder, config, udp_redirect_map_fd, udp_token_map_fd, SB_EBPF_STAT_UDP_REDIRECT_ENTRIES,
+        builder, config, udp_redirect_map_fd, udp_token_map_fd,
         SB_EBPF_PROTO_UDP, true, listen_port, drop_jumps, drop_jump_count);
     patch_jump(builder, done, builder->count);
 }
@@ -1654,7 +1583,7 @@ static bool emit_ipv4_mapped_ipv6_branch(
         emit(builder, BPF_MOV64_REG(BPF_REG_8, BPF_REG_5));
         size_t tcp_destination = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_3, SB_EBPF_PROTO_TCP, 0));
         emit_udp_connected_state_reset(
-            builder, config, udp_redirect_map_fd, udp_token_map_fd, udp_peer_map_fd);
+            builder, udp_redirect_map_fd, udp_token_map_fd, udp_peer_map_fd);
         emit_udp_peer_cache_update_v4mapped(builder, udp_peer_map_fd, bypass_jumps, bypass_jump_count);
         patch_jump(builder, tcp_destination, builder->count);
     } else {
@@ -1732,7 +1661,7 @@ static int build_ipv4_sock_addr_prog(
         bypass_jumps[bypass_jump_count++] =
             emit_jump(&b, BPF_JMP_IMM_OP(BPF_JNE, BPF_REG_2, SB_EBPF_PROTO_UDP, 0));
         emit_udp_connected_state_reset(
-            &b, config, udp_redirect_map_fd, udp_token_map_fd, udp_peer_map_fd);
+            &b, udp_redirect_map_fd, udp_token_map_fd, udp_peer_map_fd);
         emit_udp_peer_cache_update(&b, udp_peer_map_fd, false, bypass_jumps, &bypass_jump_count);
         patch_jump(&b, tcp_connect, b.count);
     }
@@ -1877,7 +1806,7 @@ static int build_ipv6_sock_addr_prog(
         bypass_jumps[bypass_jump_count++] =
             emit_jump(&b, BPF_JMP_IMM_OP(BPF_JNE, BPF_REG_2, SB_EBPF_PROTO_UDP, 0));
         emit_udp_connected_state_reset(
-            &b, config, udp_redirect_map_fd, udp_token_map_fd, udp_peer_map_fd);
+            &b, udp_redirect_map_fd, udp_token_map_fd, udp_peer_map_fd);
         emit_udp_peer_cache_update(&b, udp_peer_map_fd, true, bypass_jumps, &bypass_jump_count);
         // map_update_elem() invalidates R1-R5. Reload the destination before the common
         // IPv6 interception path reads the address and port registers.
@@ -2193,7 +2122,6 @@ static int build_udp6_recvmsg_prog(
 }
 
 static int build_socket_release_prog(
-    const struct sb_ebpf_inbound_config *config,
     int udp_redirect_map_fd,
     int udp_token_map_fd,
     int udp_peer_map_fd,
@@ -2216,7 +2144,7 @@ static int build_socket_release_prog(
     emit(&b, BPF_ALU64_IMM_OP(BPF_ADD, BPF_REG_2, STACK_COOKIE_KEY));
     emit(&b, BPF_CALL_FUNC(BPF_FUNC_map_lookup_elem));
     size_t no_token = emit_jump(&b, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_0, 0, 0));
-    emit_udp_redirect_delete_from_reg(&b, config, udp_redirect_map_fd, BPF_REG_0);
+    emit_udp_redirect_delete_from_reg(&b, udp_redirect_map_fd, BPF_REG_0);
     patch_jump(&b, no_token, b.count);
 
     emit_ld_map_fd(&b, BPF_REG_1, udp_token_map_fd);
@@ -2307,8 +2235,6 @@ int sb_ebpf_inbound_prepare(
     runtime->udp_token_map_fd = enable_udp
         ? create_udp_token_map(SB_EBPF_MAX_UDP_REDIRECT_MAP_ENTRIES)
         : -1;
-    runtime->stats_map_fd = create_stats_map();
-    config.stats_map_fd = runtime->stats_map_fd;
     runtime->udp_peer_map_fd = enable_udp
         ? create_udp_peer_map(SB_EBPF_MAX_UDP_PEER_MAP_ENTRIES)
         : -1;
@@ -2323,7 +2249,6 @@ int sb_ebpf_inbound_prepare(
     if ((enable_tcp && runtime->tcp_redirect_map_fd < 0) ||
         (enable_udp && runtime->udp_redirect_map_fd < 0) ||
         (enable_udp && (runtime->udp_token_map_fd < 0 || runtime->udp_peer_map_fd < 0)) ||
-        runtime->stats_map_fd < 0 ||
         runtime->bypass_socket_cookie_map_fd < 0 ||
         (include_uid_entries > 0U && runtime->include_uid_map_fd < 0) ||
         (exclude_uid_entries > 0U && runtime->exclude_uid_map_fd < 0) ||
@@ -2457,7 +2382,6 @@ int sb_ebpf_inbound_prepare(
     }
     if (enable_udp) {
         runtime->socket_release_prog_fd = build_socket_release_prog(
-            &config,
             runtime->udp_redirect_map_fd,
             runtime->udp_token_map_fd,
             runtime->udp_peer_map_fd,
@@ -2616,7 +2540,6 @@ int sb_ebpf_inbound_close(struct sb_ebpf_inbound_runtime *runtime) {
     close_runtime_fd(&runtime->bypass_socket_cookie_map_fd, &result, &saved_errno);
     close_runtime_fd(&runtime->udp_peer_map_fd, &result, &saved_errno);
     close_runtime_fd(&runtime->udp_token_map_fd, &result, &saved_errno);
-    close_runtime_fd(&runtime->stats_map_fd, &result, &saved_errno);
     close_runtime_fd(&runtime->udp_redirect_map_fd, &result, &saved_errno);
     close_runtime_fd(&runtime->tcp_redirect_map_fd, &result, &saved_errno);
     close_runtime_fd(&runtime->cgroup_fd, &result, &saved_errno);

@@ -75,8 +75,6 @@ type Inbound struct {
 	sharedNetwork     *sharedNetwork
 	backendAccess     sync.RWMutex
 	closeAccess       sync.Mutex
-	statsCancel       context.CancelFunc
-	statsDone         chan struct{}
 
 	bypassRuleSetAccess    sync.Mutex
 	bypassRuleSet          []adapter.RuleSet
@@ -197,14 +195,15 @@ func (i *Inbound) newListener(network []string, ipv6 bool) *listener.Listener {
 	}
 	listenOptions.Listen = common.Ptr(badoption.Addr(listenAddress))
 	return listener.New(listener.Options{
-		Context:             i.ctx,
-		Logger:              i.logger,
-		Network:             network,
-		Listen:              listenOptions,
-		ConnectionHandler:   i,
-		OOBPacketHandler:    i,
-		DisablePacketOutput: true,
-		SocketControl:       i.socketControl(ipv6),
+		Context:              i.ctx,
+		Logger:               i.logger,
+		Network:              network,
+		Listen:               listenOptions,
+		ConnectionHandler:    i,
+		OOBPacketHandler:     i,
+		DisablePacketOutput:  true,
+		DisableConnectionLog: true,
+		SocketControl:        i.socketControl(ipv6),
 	})
 }
 
@@ -355,7 +354,6 @@ func (i *Inbound) Start(stage adapter.StartStage) error {
 		if err := backend.Attach(); err != nil {
 			return combineStartError(err, i.cleanupStartFailure())
 		}
-		i.startRuntimeStatsMonitor(backend)
 		bypassIPv4Count, bypassIPv6Count := backend.BypassCIDRCount()
 		i.logger.Info(
 			"eBPF inbound attached: cgroup=", backend.CgroupPath(),
@@ -380,7 +378,6 @@ func combineStartError(startErr error, cleanupErr error) error {
 func (i *Inbound) Close() error {
 	i.closeAccess.Lock()
 	defer i.closeAccess.Unlock()
-	i.stopRuntimeStatsMonitor()
 	i.udpNat.Purge()
 	i.stopBypassRuleSets()
 	var sharedErr error
@@ -437,7 +434,6 @@ func (i *Inbound) closeListeners() error {
 }
 
 func (i *Inbound) cleanupStartFailure() error {
-	i.stopRuntimeStatsMonitor()
 	i.udpNat.Purge()
 	i.stopBypassRuleSets()
 	var sharedErr error
@@ -658,7 +654,6 @@ func (i *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata ada
 	if err != nil {
 		i.logger.DebugContext(ctx, "restore TCP original source: ", err)
 	}
-	i.logger.InfoContext(ctx, "inbound connection to ", metadata.Destination)
 	i.router.RouteConnectionEx(ctx, conn, metadata, onClose)
 }
 
@@ -707,8 +702,6 @@ func (i *Inbound) NewPacketConnectionEx(ctx context.Context, conn N.PacketConn, 
 			i.logger.DebugContext(ctx, "restore UDP original source: ", err)
 		}
 	}
-	i.logger.InfoContext(ctx, "inbound packet connection from ", metadata.Source)
-	i.logger.InfoContext(ctx, "inbound packet connection to ", destination)
 	i.router.RoutePacketConnectionEx(ctx, conn, metadata, onClose)
 }
 

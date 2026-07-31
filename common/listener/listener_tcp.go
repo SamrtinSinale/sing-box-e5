@@ -111,7 +111,9 @@ func (l *Listener) loopTCPIn() {
 		metadata.Source = M.SocksaddrFromNet(conn.RemoteAddr()).Unwrap()
 		metadata.OriginDestination = M.SocksaddrFromNet(conn.LocalAddr()).Unwrap()
 		ctx := log.ContextWithNewID(l.ctx)
-		l.logger.InfoContext(ctx, "inbound connection from ", metadata.Source)
+		if !l.disableConnectionLog {
+			l.logger.InfoContext(ctx, "inbound connection from ", metadata.Source)
+		}
 		go l.connHandler.NewConnection(ctx, conn, metadata, nil)
 	}
 }

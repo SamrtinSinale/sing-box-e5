@@ -35,10 +35,6 @@ func (b *Backend) BypassCIDRCount() (int, int) {
 	return 0, 0
 }
 
-func (b *Backend) RuntimeStats() (RuntimeStats, error) {
-	return RuntimeStats{}, E.New("eBPF inbound is not supported by this build: cgo is disabled")
-}
-
 func (b *Backend) CgroupPath() string {
 	return ""
 }

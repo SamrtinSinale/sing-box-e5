@@ -69,7 +69,6 @@ import (
 	"runtime"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"unsafe"
 
@@ -89,23 +88,19 @@ const (
 )
 
 type Backend struct {
-	access             sync.RWMutex
-	runtime            *C.struct_sb_ebpf_inbound_runtime
-	tcpRedirectMap     int
-	udpRedirectMap     int
-	udpTokenMap        int
-	statsMap           int
-	cookieMap          int
-	bypassIPv4CIDRMap  int
-	bypassIPv6CIDRMap  int
-	bypassIPv4CIDR     []netip.Prefix
-	bypassIPv6CIDR     []netip.Prefix
-	cgroupPath         string
-	enableUDP          bool
-	hijackDNS          bool
-	lookupMisses       atomic.Uint64
-	tcpRedirectDeletes atomic.Uint64
-	udpRedirectDeletes atomic.Uint64
+	access            sync.RWMutex
+	runtime           *C.struct_sb_ebpf_inbound_runtime
+	tcpRedirectMap    int
+	udpRedirectMap    int
+	udpTokenMap       int
+	cookieMap         int
+	bypassIPv4CIDRMap int
+	bypassIPv6CIDRMap int
+	bypassIPv4CIDR    []netip.Prefix
+	bypassIPv6CIDR    []netip.Prefix
+	cgroupPath        string
+	enableUDP         bool
+	hijackDNS         bool
 }
 
 type mapElementAttr struct {
@@ -232,7 +227,6 @@ func Prepare(
 		tcpRedirectMap:    int(runtimeState.tcp_redirect_map_fd),
 		udpRedirectMap:    int(runtimeState.udp_redirect_map_fd),
 		udpTokenMap:       int(runtimeState.udp_token_map_fd),
-		statsMap:          int(runtimeState.stats_map_fd),
 		cookieMap:         int(runtimeState.bypass_socket_cookie_map_fd),
 		bypassIPv4CIDRMap: int(runtimeState.bypass_ipv4_cidr_map_fd),
 		bypassIPv6CIDRMap: int(runtimeState.bypass_ipv6_cidr_map_fd),
@@ -427,7 +421,6 @@ func (b *Backend) Close() error {
 		b.tcpRedirectMap = -1
 		b.udpRedirectMap = -1
 		b.udpTokenMap = -1
-		b.statsMap = -1
 		b.cookieMap = -1
 		b.bypassIPv4CIDRMap = -1
 		b.bypassIPv6CIDRMap = -1
@@ -650,7 +643,6 @@ func (b *Backend) lookupOriginal(
 	}
 	err = lookupMap(redirectMap, unsafe.Pointer(&key), unsafe.Pointer(&original))
 	if err != nil {
-		b.lookupMisses.Add(1)
 		return OriginalDestination{}, E.Cause(err, "lookup original destination")
 	}
 	var address netip.Addr
@@ -666,9 +658,6 @@ func (b *Backend) lookupOriginal(
 		err = deleteMap(redirectMap, unsafe.Pointer(&key))
 		if err != nil && !errors.Is(err, unix.ENOENT) {
 			return OriginalDestination{}, E.Cause(err, "delete consumed redirect mapping")
-		}
-		if err == nil {
-			b.addRedirectDelete(protocol)
 		}
 	}
 	return OriginalDestination{
@@ -702,7 +691,6 @@ func (b *Backend) DeleteRedirect(protocol uint8, redirect netip.AddrPort) error 
 	if err != nil {
 		return E.Cause(err, "delete redirect mapping")
 	}
-	b.addRedirectDelete(protocol)
 	return nil
 }
 
@@ -714,14 +702,6 @@ func (b *Backend) redirectMap(protocol uint8) (int, error) {
 		return b.udpRedirectMap, nil
 	default:
 		return -1, E.New("unsupported eBPF redirect protocol: ", protocol)
-	}
-}
-
-func (b *Backend) addRedirectDelete(protocol uint8) {
-	if protocol == ProtocolTCP {
-		b.tcpRedirectDeletes.Add(1)
-	} else {
-		b.udpRedirectDeletes.Add(1)
 	}
 }
 

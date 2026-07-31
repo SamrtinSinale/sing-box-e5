@@ -212,12 +212,6 @@ from a cgroup socket-release program when the application socket closes. A UDP
 socket reconnect also removes the previous connected mapping before installing
 the replacement.
 
-sing-box logs eBPF runtime metrics every five minutes when they change and once
-when the inbound stops. The metrics include separate TCP and UDP map occupancy, token
-collisions, map update failures, rejected redirects, and userspace original
-destination lookup misses. Occupancy at or above 75 percent, rejected redirects,
-and lookup misses are logged as warnings.
-
 sing-box automatically installs an `RTN_LOCAL` route for each configured
 prefix through the loopback interface in the current network namespace. An
 existing local route that covers the prefix is reused. On shutdown, sing-box
@@ -266,8 +260,10 @@ layer-3-only device such as TUN, WireGuard, PPP, or IPIP. An interface may be
 configured before it exists. In that state the eBPF inbound starts normally
 and waits without enabling the shared data plane. If an attached interface
 disappears, sing-box detaches its state and keeps the local eBPF inbound
-running; the same interface name is attached again when it reappears. The list
-is reconciled after network changes and every three seconds.
+running; the same interface name is attached again when it reappears. sing-box
+uses its network update monitor to reconcile the list immediately. A
+three-second fallback is used only when the platform does not provide that
+monitor.
 
 Select the interface where client frames actually enter TC ingress. For a
 Linux bridge this is commonly each client-facing bridge port, not necessarily
@@ -318,6 +314,10 @@ service used while `shared_network` is disabled. XDP or hardware tethering
 offload that bypasses Linux TC cannot be proxied; verify the actual downstream
 interface and both directions on each Android kernel. On standard Linux, also
 verify the chosen bridge-port hook and any pre-existing priority `1` TC filter.
+
+The eBPF inbound does not emit per-connection Info logs. When the Clash API is
+enabled, use its connection view for source, destination, traffic, and rule
+metadata. Startup, attachment, cleanup, and error messages remain in the log.
 
 ## Build
 

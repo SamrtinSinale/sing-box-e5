@@ -223,7 +223,8 @@ loopback 源地址会原样保留。
 `lo`、上游接口或 TUN、WireGuard、PPP、IPIP 等纯三层设备。接口可以在启动时尚未
 出现；此时 eBPF 入站会正常启动并等待，不启用 shared 数据面。已挂载的接口消失后，
 sing-box 会卸载其状态，同时保持本机 eBPF 入站运行；同名接口重新出现后会自动重新
-挂载。sing-box 会在网络变化后及每三秒重新同步接口列表。
+挂载。sing-box 会复用自身的网络变化监控器并立即同步接口列表；仅当平台未提供该
+监控器时，才使用三秒轮询作为兼容兜底。
 
 应选择客户端帧实际进入 TC ingress 的接口。Linux bridge 场景通常需要选择面向客户端
 的各个 bridge port，而不能假定 bridge master 一定能看到这些 ingress 帧；具体 hook
@@ -261,6 +262,9 @@ sing-box 排在其后，公网 IPv6 会先被直接重定向到上游。发给�
 `shared_network` 关闭时使用的 DNS 服务。绕过 Linux TC 的 XDP 或硬件热点卸载无法
 代理；应在每种 Android 内核上验证实际下游接口及双向流量。在标准 Linux 上还应验证
 所选 bridge port 的 hook 路径，以及是否已有优先级 `1` 的 TC filter。
+
+eBPF 入站不输出逐连接 Info 日志。启用 Clash API 后，应通过其连接视图查看源地址、
+目标地址、流量和规则 metadata；启动、挂载、清理及错误日志仍会保留。
 
 ## 构建
 

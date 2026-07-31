@@ -20,6 +20,7 @@ import (
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
+	tun "github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -27,6 +28,7 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	udpnat "github.com/sagernet/sing/common/udpnat2"
+	"github.com/sagernet/sing/common/x/list"
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
@@ -34,7 +36,7 @@ import (
 )
 
 const (
-	sharedNetworkRefresh = 3 * time.Second
+	sharedNetworkFallbackRefresh = 3 * time.Second
 	// Run before Android tethering offload (IPv6 priority 2, IPv4 priority 3).
 	sharedNetworkTCPriority   = 1
 	sharedIngressFilterHandle = 0x5342
@@ -120,11 +122,12 @@ func (s *sharedNetwork) Start(parentBackend *ECommon.Backend) error {
 	}
 	s.backend = backend
 	s.tc = &sharedTCManager{
-		backend:     backend,
-		logger:      s.parent.logger,
-		interfaces:  s.interfaces,
-		enableIPv4:  s.parent.redirectIPv4.IsValid(),
-		attachments: make(map[string]*sharedTCAttachment),
+		backend:        backend,
+		logger:         s.parent.logger,
+		interfaces:     s.interfaces,
+		enableIPv4:     s.parent.redirectIPv4.IsValid(),
+		networkMonitor: s.parent.networkManager.NetworkMonitor(),
+		attachments:    make(map[string]*sharedTCAttachment),
 	}
 	if err = s.tc.Start(); err != nil {
 		return E.Errors(err, s.Close())
@@ -198,14 +201,15 @@ func (s *sharedNetwork) newListener(network string, ipv6Listener bool, port uint
 	listenOptions.ListenPort = port
 	listenOptions.BindInterface = ""
 	return listener.New(listener.Options{
-		Context:             s.parent.ctx,
-		Logger:              s.parent.logger,
-		Network:             []string{network},
-		Listen:              listenOptions,
-		ConnectionHandler:   s,
-		OOBPacketHandler:    s,
-		DisablePacketOutput: true,
-		SocketControl:       s.parent.socketControl(ipv6Listener),
+		Context:              s.parent.ctx,
+		Logger:               s.parent.logger,
+		Network:              []string{network},
+		Listen:               listenOptions,
+		ConnectionHandler:    s,
+		OOBPacketHandler:     s,
+		DisablePacketOutput:  true,
+		DisableConnectionLog: true,
+		SocketControl:        s.parent.socketControl(ipv6Listener),
 	})
 }
 
@@ -282,7 +286,6 @@ func (s *sharedNetwork) NewConnection(ctx context.Context, conn net.Conn, metada
 	metadata.InboundType = s.parent.Type()
 	metadata.Source = M.SocksaddrFromNetIP(client)
 	metadata.Destination = M.SocksaddrFromNetIP(original.Destination)
-	s.parent.logger.InfoContext(ctx, "shared-network inbound connection to ", metadata.Destination)
 	s.parent.router.RouteConnectionEx(ctx, conn, metadata, onClose)
 }
 
@@ -316,7 +319,6 @@ func (s *sharedNetwork) NewPacketConnectionEx(ctx context.Context, conn N.Packet
 	}
 	//nolint:staticcheck
 	metadata.InboundDetour = s.parent.listenOptions.Detour
-	s.parent.logger.InfoContext(ctx, "shared-network inbound packet connection to ", destination)
 	s.parent.router.RoutePacketConnectionEx(ctx, conn, metadata, onClose)
 }
 
@@ -378,16 +380,18 @@ func (w *sharedPacketWriter) WritePacket(buffer *buf.Buffer, destination M.Socks
 }
 
 type sharedTCManager struct {
-	backend     *ECommon.SharedNetworkBackend
-	logger      interfaceLogger
-	interfaces  []string
-	enableIPv4  bool
-	access      sync.Mutex
-	attachments map[string]*sharedTCAttachment
-	enabled     bool
-	cancel      context.CancelFunc
-	done        chan struct{}
-	wake        chan struct{}
+	backend         *ECommon.SharedNetworkBackend
+	logger          interfaceLogger
+	interfaces      []string
+	enableIPv4      bool
+	access          sync.Mutex
+	attachments     map[string]*sharedTCAttachment
+	enabled         bool
+	cancel          context.CancelFunc
+	done            chan struct{}
+	wake            chan struct{}
+	networkMonitor  tun.NetworkUpdateMonitor
+	networkCallback *list.Element[tun.NetworkUpdateCallback]
 }
 
 type interfaceLogger interface {
@@ -411,19 +415,27 @@ func (m *sharedTCManager) Start() error {
 	m.cancel = cancel
 	m.done = make(chan struct{})
 	m.wake = make(chan struct{}, 1)
+	if m.networkMonitor != nil {
+		m.networkCallback = m.networkMonitor.RegisterCallback(m.Wake)
+	}
 	go m.loop(ctx)
 	return nil
 }
 
 func (m *sharedTCManager) loop(ctx context.Context) {
 	defer close(m.done)
-	ticker := time.NewTicker(sharedNetworkRefresh)
-	defer ticker.Stop()
+	var ticker *time.Ticker
+	var tickerC <-chan time.Time
+	if m.networkMonitor == nil {
+		ticker = time.NewTicker(sharedNetworkFallbackRefresh)
+		tickerC = ticker.C
+		defer ticker.Stop()
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-tickerC:
 		case <-m.wake:
 		}
 		if err := m.reconcile(); err != nil {
@@ -557,6 +569,10 @@ func (m *sharedTCManager) InterfaceString() string {
 func (m *sharedTCManager) Close() error {
 	if m == nil {
 		return nil
+	}
+	if m.networkCallback != nil {
+		m.networkMonitor.UnregisterCallback(m.networkCallback)
+		m.networkCallback = nil
 	}
 	if m.cancel != nil {
 		m.cancel()

@@ -51,14 +51,6 @@ func testBackendProgramLoad(t *testing.T, hijackDNS bool) {
 	if !containsProgram(programs, "sb_ebpf_rel (cgroup/sock_release)") {
 		t.Fatalf("socket-release program was not built: %v", programs)
 	}
-	stats, err := backend.RuntimeStats()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stats != (RuntimeStats{}) {
-		t.Fatalf("new eBPF backend has non-zero runtime stats: %+v", stats)
-	}
-
 	sharedBackend, err := PrepareSharedNetwork(
 		backend,
 		65531,

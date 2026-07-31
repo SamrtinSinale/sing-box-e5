@@ -87,11 +87,11 @@ cleanup. Use that mode only with an empty, dedicated cgroup passed through
 briefly affect unrelated traffic. Preparing the target also removes stale
 programs whose names start with `sb_ebpf_`.
 
-For Android soak tests, record the startup program list and the periodic/final
-`eBPF runtime metrics` lines. After repeated short TCP connections, UDP session
-expiry, and connected UDP socket churn, TCP occupancy should return promptly,
-UDP occupancy should plateau instead of growing with cumulative traffic, and
-redirect drops, update failures, and lookup misses should remain zero.
+For Android soak tests, record the startup program list and monitor the Clash
+API connection view while exercising repeated short TCP connections, UDP
+session expiry, and connected UDP socket churn. Traffic should continue to use
+the correct original destination without persistent lookup or map operation
+errors in the log.
 
 ## Credits
 

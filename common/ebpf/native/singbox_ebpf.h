@@ -15,7 +15,6 @@
 #define SB_EBPF_MAX_UDP_PEER_MAP_ENTRIES 65536U
 #define SB_EBPF_MAX_POLICY_MAP_ENTRIES 4096U
 #define SB_EBPF_MAX_BYPASS_CIDR_MAP_ENTRIES 65536U
-#define SB_EBPF_STATS_COUNT 6U
 #define SB_EBPF_ORIGINAL_DST_FLAG_CONNECTED_UDP 1U
 
 #define SB_EBPF_PROTO_TCP 6U
@@ -23,15 +22,6 @@
 #define SB_EBPF_NETWORK_TCP 1U
 #define SB_EBPF_NETWORK_UDP 2U
 #define SB_EBPF_NETWORK_BOTH (SB_EBPF_NETWORK_TCP | SB_EBPF_NETWORK_UDP)
-
-enum sb_ebpf_stat_index {
-    SB_EBPF_STAT_TCP_REDIRECT_ENTRIES = 0,
-    SB_EBPF_STAT_UDP_REDIRECT_ENTRIES = 1,
-    SB_EBPF_STAT_UDP_REDIRECT_DELETES = 2,
-    SB_EBPF_STAT_TOKEN_COLLISIONS = 3,
-    SB_EBPF_STAT_MAP_UPDATE_FAILURES = 4,
-    SB_EBPF_STAT_REDIRECT_DROPS = 5,
-};
 
 struct sb_ebpf_redirect_key {
     uint8_t family;
@@ -89,7 +79,6 @@ struct sb_ebpf_inbound_config {
     uint8_t inbound_network;
     bool disable_ipv4;
     bool hijack_dns;
-    int stats_map_fd;
     uint8_t redirect_ipv4_prefix[4];
     uint32_t redirect_ipv4_prefix_bits;
     uint8_t redirect_ipv6_prefix[16];
@@ -101,7 +90,6 @@ struct sb_ebpf_inbound_runtime {
     int tcp_redirect_map_fd;
     int udp_redirect_map_fd;
     int udp_token_map_fd;
-    int stats_map_fd;
     int udp_peer_map_fd;
     int bypass_socket_cookie_map_fd;
     int include_uid_map_fd;
