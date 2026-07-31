@@ -173,6 +173,69 @@ static void emit_inbound_network_filter(
     }
 }
 
+static void emit_dns_port_jumps(
+    struct bpf_builder *builder,
+    uint8_t protocol,
+    bool protocol_from_context,
+    int port_reg,
+    size_t *target_jumps,
+    size_t *target_jump_count) {
+    if (!protocol_from_context) {
+        if (protocol == SB_EBPF_PROTO_TCP || protocol == SB_EBPF_PROTO_UDP) {
+            target_jumps[(*target_jump_count)++] =
+                emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, port_reg, htons(53), 0));
+        }
+        return;
+    }
+
+    emit(builder, BPF_LDX_MEM(
+        BPF_W, BPF_REG_2, BPF_REG_6, offsetof(struct bpf_sock_addr, protocol)));
+    size_t tcp = emit_jump(
+        builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_2, SB_EBPF_PROTO_TCP, 0));
+    size_t other = emit_jump(
+        builder, BPF_JMP_IMM_OP(BPF_JNE, BPF_REG_2, SB_EBPF_PROTO_UDP, 0));
+    patch_jump(builder, tcp, builder->count);
+    target_jumps[(*target_jump_count)++] =
+        emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, port_reg, htons(53), 0));
+    patch_jump(builder, other, builder->count);
+}
+
+static void emit_dns_off_bypass(
+    struct bpf_builder *builder,
+    const struct sb_ebpf_inbound_config *config,
+    uint8_t protocol,
+    bool protocol_from_context,
+    int port_reg,
+    size_t *bypass_jumps,
+    size_t *bypass_jump_count) {
+    if (config->hijack_dns) return;
+    emit_dns_port_jumps(
+        builder,
+        protocol,
+        protocol_from_context,
+        port_reg,
+        bypass_jumps,
+        bypass_jump_count);
+}
+
+static void emit_dns_hijack_jumps(
+    struct bpf_builder *builder,
+    const struct sb_ebpf_inbound_config *config,
+    uint8_t protocol,
+    bool protocol_from_context,
+    int port_reg,
+    size_t *hijack_jumps,
+    size_t *hijack_jump_count) {
+    if (!config->hijack_dns) return;
+    emit_dns_port_jumps(
+        builder,
+        protocol,
+        protocol_from_context,
+        port_reg,
+        hijack_jumps,
+        hijack_jump_count);
+}
+
 static int create_redirect_map(uint32_t max_entries) {
     return sb_ebpf_create_map(
         (enum bpf_map_type)SB_EBPF_HASH_MAP_TYPE,
@@ -1486,9 +1549,22 @@ static void emit_ipv4_mapped_redirect_from_regs(
     size_t *drop_jump_count,
     size_t *allow_jumps,
     size_t *allow_jump_count) {
+    size_t dns_hijack_jumps[2];
+    size_t dns_hijack_jump_count = 0;
+    emit_dns_hijack_jumps(
+        builder,
+        config,
+        protocol,
+        protocol_from_context,
+        BPF_REG_8,
+        dns_hijack_jumps,
+        &dns_hijack_jump_count);
     emit_ipv4_destination_bypass(builder, bypass_jumps, bypass_jump_count);
     emit_ipv4_cidr_bypass(
         builder, bypass_ipv4_cidr_map_fd, BPF_REG_7, bypass_jumps, bypass_jump_count);
+    for (size_t i = 0; i < dns_hijack_jump_count; ++i) {
+        patch_jump(builder, dns_hijack_jumps[i], builder->count);
+    }
     emit_ipv4_mapped_redirect_update_and_rewrite_by_protocol(
         builder,
         config,
@@ -1623,6 +1699,9 @@ static int build_ipv4_sock_addr_prog(
         &b, include_uid_map_fd, exclude_uid_map_fd, bypass_jumps, &bypass_jump_count);
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_7, BPF_REG_6, offsetof(struct bpf_sock_addr, user_ip4)));
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_8, BPF_REG_6, offsetof(struct bpf_sock_addr, user_port)));
+    emit_dns_off_bypass(
+        &b, config, protocol, protocol_from_context, BPF_REG_8,
+        bypass_jumps, &bypass_jump_count);
     emit_udp_system_service_bypass(
         &b, protocol, protocol_from_context, BPF_REG_8, bypass_jumps, &bypass_jump_count);
     // Connected UDP send() may not hit UDP_SENDMSG on Android kernels, so CONNECT must continue interception.
@@ -1642,9 +1721,17 @@ static int build_ipv4_sock_addr_prog(
             &b, udp_token_map_fd, listen_port, allow_jumps, &allow_jump_count);
         emit_udp_peer_cache_restore_v4(&b, udp_peer_map_fd);
     }
+    size_t dns_hijack_jumps[2];
+    size_t dns_hijack_jump_count = 0;
+    emit_dns_hijack_jumps(
+        &b, config, protocol, protocol_from_context, BPF_REG_8,
+        dns_hijack_jumps, &dns_hijack_jump_count);
     emit_ipv4_destination_bypass(&b, bypass_jumps, &bypass_jump_count);
     emit_ipv4_cidr_bypass(
         &b, bypass_ipv4_cidr_map_fd, BPF_REG_7, bypass_jumps, &bypass_jump_count);
+    for (size_t i = 0; i < dns_hijack_jump_count; ++i) {
+        patch_jump(&b, dns_hijack_jumps[i], b.count);
+    }
     emit_redirect_update_and_rewrite_by_protocol(
         &b,
         config,
@@ -1717,6 +1804,9 @@ static int build_ipv6_sock_addr_prog(
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_9, BPF_REG_6, offsetof(struct bpf_sock_addr, user_ip6) + 8));
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_4, BPF_REG_6, offsetof(struct bpf_sock_addr, user_ip6) + 12));
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_5, BPF_REG_6, offsetof(struct bpf_sock_addr, user_port)));
+    emit_dns_off_bypass(
+        &b, config, protocol, protocol_from_context, BPF_REG_5,
+        bypass_jumps, &bypass_jump_count);
     emit_udp_system_service_bypass(
         &b, protocol, protocol_from_context, BPF_REG_5, bypass_jumps, &bypass_jump_count);
     if (attach_type == BPF_CGROUP_UDP6_SENDMSG && protocol == SB_EBPF_PROTO_UDP && !protocol_from_context) {
@@ -1781,9 +1871,17 @@ static int build_ipv6_sock_addr_prog(
     if (attach_type == BPF_CGROUP_UDP6_SENDMSG && protocol == SB_EBPF_PROTO_UDP && !protocol_from_context) {
         emit_udp_peer_cache_restore_v6(&b, udp_peer_map_fd);
     }
+    size_t dns_hijack_jumps[2];
+    size_t dns_hijack_jump_count = 0;
+    emit_dns_hijack_jumps(
+        &b, config, protocol, protocol_from_context, BPF_REG_5,
+        dns_hijack_jumps, &dns_hijack_jump_count);
     emit_ipv6_destination_bypass(&b, bypass_jumps, &bypass_jump_count);
     emit_ipv6_cidr_bypass(
         &b, bypass_ipv6_cidr_map_fd, bypass_jumps, &bypass_jump_count);
+    for (size_t i = 0; i < dns_hijack_jump_count; ++i) {
+        patch_jump(&b, dns_hijack_jumps[i], b.count);
+    }
     emit_redirect_update_and_rewrite_v6_by_protocol(
         &b,
         config,
@@ -1855,6 +1953,9 @@ static int build_ipv4_mapped_ipv6_sock_addr_prog(
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_9, BPF_REG_6, offsetof(struct bpf_sock_addr, user_ip6) + 8));
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_4, BPF_REG_6, offsetof(struct bpf_sock_addr, user_ip6) + 12));
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_5, BPF_REG_6, offsetof(struct bpf_sock_addr, user_port)));
+    emit_dns_off_bypass(
+        &b, config, protocol, protocol_from_context, BPF_REG_5,
+        bypass_jumps, &bypass_jump_count);
     emit_udp_system_service_bypass(
         &b, protocol, protocol_from_context, BPF_REG_5, bypass_jumps, &bypass_jump_count);
     if (attach_type == BPF_CGROUP_UDP6_SENDMSG && protocol == SB_EBPF_PROTO_UDP && !protocol_from_context) {
@@ -2140,6 +2241,7 @@ int sb_ebpf_inbound_prepare(
 	bool enable_udp,
 	bool enable_ipv4,
 	bool enable_bypass_cidr,
+	bool hijack_dns,
 	const uint8_t redirect_ipv4[4],
 	uint32_t redirect_ipv4_prefix_bits,
 	bool enable_ipv6,
@@ -2167,6 +2269,7 @@ int sb_ebpf_inbound_prepare(
         (enable_tcp ? SB_EBPF_NETWORK_TCP : 0U) |
         (enable_udp ? SB_EBPF_NETWORK_UDP : 0U);
     config.disable_ipv4 = !enable_ipv4;
+    config.hijack_dns = hijack_dns;
     if (enable_ipv4) {
         memcpy(config.redirect_ipv4_prefix, redirect_ipv4, sizeof(config.redirect_ipv4_prefix));
         config.redirect_ipv4_prefix_bits = redirect_ipv4_prefix_bits;

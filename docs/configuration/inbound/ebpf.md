@@ -23,6 +23,7 @@ It is included only in builds made with the `with_ebpf` build tag and cgo.
   ... // Listen Fields
 
   "network": "",
+  "dns_mode": "hijack",
   "cgroup_path": "",
   "redirect_address": [
     "127.128.0.0/9",
@@ -78,8 +79,31 @@ Both if empty.
 
 Protocols not selected by `network` bypass the eBPF inbound.
 
-`shared_network` requires UDP because hotspot DNS is proxied when the mode is
-enabled.
+`shared_network` with `dns_mode` set to `hijack` requires UDP because hotspot
+DNS is proxied when the mode is enabled.
+
+#### dns_mode
+
+DNS handling mode. One of:
+
+| Mode | Behavior |
+|------|----------|
+| `hijack` | Intercept TCP and UDP destination port 53 before destination-address and `bypass_rule_set` checks. |
+| `off` | Always bypass TCP and UDP destination port 53. |
+
+Defaults to `hijack`.
+
+The mode applies only to protocols selected by `network`. Socket protection,
+UID include/exclude policy, the Android `dns_tether` exclusion, and DHCP safety
+bypasses are evaluated before DNS handling. In `hijack` mode, destination port
+53 then takes priority over unspecified, local, private, multicast, and
+`bypass_rule_set` destination checks, preventing a DNS server address contained
+in a bypass CIDR from leaking queries outside sing-box.
+
+The same mode applies to `shared_network`. Keep the default `hijack` mode for a
+hotspot unless the host provides a working DNS service and intentionally sends
+hotspot DNS outside sing-box. With `off`, hotspot DNS is not proxied and may
+leak or fail if no independent DNS path exists.
 
 #### cgroup_path
 
@@ -199,11 +223,12 @@ prefix through the loopback interface in the current network namespace. An
 existing local route that covers the prefix is reused. On shutdown, sing-box
 removes only routes created by this inbound.
 
-The local cgroup path always bypasses unspecified, loopback, multicast, and
-current local-interface networks. The interface prefixes are refreshed after
-network changes. UDP ports 67, 68, 546, and 547 also bypass interception. As a
-result, enabling the eBPF inbound without `shared_network` does not attach TC,
-change `route_localnet`, proxy hotspot clients, or disturb hotspot DHCP/DNS.
+Except for destination port 53 in `dns_mode: hijack`, the local cgroup path
+always bypasses unspecified, loopback, multicast, and current local-interface
+networks. The interface prefixes are refreshed after network changes. UDP ports
+67, 68, 546, and 547 also bypass interception. As a result, enabling the eBPF
+inbound without `shared_network` does not attach TC, change `route_localnet`,
+proxy hotspot clients, or disturb hotspot DHCP/DNS.
 
 Only one eBPF inbound may own a cgroup hierarchy at a time. sing-box holds an
 exclusive lock on the configured cgroup directory for the inbound lifetime. Stale
@@ -237,10 +262,12 @@ and a random sing-box listener port. Egress restores the original source on
 replies. The original-destination key includes the client address and port, so
 different hotspot clients cannot alias each other's flow state.
 
-DHCP ports 67, 68, 546, and 547 always bypass TC. Destination port 53 is
-captured before host, private-network, or `bypass_rule_set` checks, including
-DNS queries sent to the hotspot gateway. Other host, private, link-local,
-multicast, and configured bypass CIDRs keep their normal forwarding path.
+DHCP ports 67, 68, 546, and 547 always bypass TC. In `dns_mode: hijack`,
+destination port 53 is captured before host, private-network, or
+`bypass_rule_set` checks, including DNS queries sent to the hotspot gateway. In
+`dns_mode: off`, destination port 53 always keeps its normal forwarding path.
+Other host, private, link-local, multicast, and configured bypass CIDRs also
+keep their normal forwarding path.
 
 For IPv4, token addresses use the configured loopback redirect prefix.
 sing-box temporarily enables `net.ipv4.conf.<interface>.route_localnet` only

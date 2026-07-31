@@ -3524,6 +3524,28 @@
       "type": "string",
       "pattern": "^[-+]?(((\\d+(\\.\\d*)?|\\.\\d+)(ns|us|µs|μs|ms|s|m|h|d))+|0)$"
     },
+    "EBPFSharedNetworkOptions": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "include_interface": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "Endpoint": {
       "oneOf": [
         {
@@ -6229,6 +6251,9 @@
             "proxy_protocol_accept_no_header": {
               "type": "boolean"
             },
+            "cgroup_path": {
+              "type": "string"
+            },
             "network": {
               "anyOf": [
                 {
@@ -6248,6 +6273,13 @@
                     ]
                   }
                 }
+              ]
+            },
+            "dns_mode": {
+              "type": "string",
+              "enum": [
+                "hijack",
+                "off"
               ]
             },
             "redirect_address": {
@@ -6345,6 +6377,9 @@
                   }
                 }
               ]
+            },
+            "shared_network": {
+              "$ref": "#/$defs/EBPFSharedNetworkOptions"
             }
           },
           "required": [

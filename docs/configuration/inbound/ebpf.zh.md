@@ -22,6 +22,7 @@ eBPF 入站通过 cgroup socket-address 程序拦截本机产生的 TCP 和 UDP 
   ... // 监听字段
 
   "network": "",
+  "dns_mode": "hijack",
   "cgroup_path": "",
   "redirect_address": [
     "127.128.0.0/9",
@@ -73,7 +74,28 @@ loopback 接口交付。
 
 未被 `network` 选中的协议会绕过 eBPF 入站。
 
-`shared_network` 必须启用 UDP，因为开启该模式后热点 DNS 由代理处理。
+`shared_network` 在 `dns_mode` 为 `hijack` 时必须启用 UDP，因为热点 DNS
+由代理处理。
+
+#### dns_mode
+
+DNS 处理模式。可选值：
+
+| 模式 | 行为 |
+|------|------|
+| `hijack` | 在目标地址及 `bypass_rule_set` 检查之前拦截 TCP/UDP 目标端口 53。 |
+| `off` | 始终放行 TCP/UDP 目标端口 53。 |
+
+默认值为 `hijack`。
+
+此模式只作用于 `network` 已启用的协议。socket 保护、UID 包含/排除策略、Android
+`dns_tether` 排除及 DHCP 安全绕过仍先于 DNS 处理执行。`hijack` 模式下，目标端口
+53 随后优先于未指定、本机、私网、多播及 `bypass_rule_set` 目标检查，避免 DNS
+服务器地址恰好位于绕过 CIDR 中时查询绕过 sing-box 而泄露。
+
+同一模式也作用于 `shared_network`。热点场景建议保持默认的 `hijack`；只有主机已
+提供可用的独立 DNS 服务，并且明确希望热点 DNS 不经过 sing-box 时才应使用 `off`。
+`off` 模式不会代理热点 DNS，如果没有独立 DNS 路径，查询可能泄露或失败。
 
 #### cgroup_path
 
@@ -165,10 +187,10 @@ sing-box 会在当前网络命名空间中，通过 loopback 接口为每个配�
 `RTN_LOCAL` 路由。若已有本地路由能够覆盖该前缀则直接复用；关闭时只删除由
 当前入站创建的路由。
 
-本机 cgroup 路径始终绕过未指定、回环、多播以及当前本机接口网段，并在网络变化
-后刷新这些网段。UDP 端口 67、68、546 和 547 也始终绕过。因此，只开启 eBPF
-入站而不开启 `shared_network` 时，不会挂载 TC、修改 `route_localnet`、代理热点
-客户端，也不会干扰热点 DHCP/DNS。
+除 `dns_mode: hijack` 下的目标端口 53 外，本机 cgroup 路径始终绕过未指定、回环、
+多播以及当前本机接口网段，并在网络变化后刷新这些网段。UDP 端口 67、68、546
+和 547 也始终绕过。因此，只开启 eBPF 入站而不开启 `shared_network` 时，不会挂载
+TC、修改 `route_localnet`、代理热点客户端，也不会干扰热点 DHCP/DNS。
 
 同一 cgroup 层级同时只能由一个 eBPF 入站管理。sing-box 会在入站生命周期内
 独占锁定配置的 cgroup 目录。只有成功取得该锁后，才会清理由异常退出遗留的
@@ -194,9 +216,10 @@ sing-box 会卸载其状态，同时保持本机 eBPF 入站运行；同名接�
 及随机 sing-box listener 端口，egress 则在回包上恢复原始源地址。原目标查询键包含
 客户端地址和端口，不同热点客户端不会错误共享流状态。
 
-DHCP 端口 67、68、546 和 547 始终绕过 TC。目标端口 53 会在本机地址、私网及
-`bypass_rule_set` 判断之前被捕获，包括发给热点网关的 DNS 查询。其他本机、私网、
-链路本地、多播和已配置绕过 CIDR 仍走普通转发路径。
+DHCP 端口 67、68、546 和 547 始终绕过 TC。`dns_mode: hijack` 下，目标端口 53
+会在本机地址、私网及 `bypass_rule_set` 判断之前被捕获，包括发给热点网关的 DNS
+查询；`dns_mode: off` 下，目标端口 53 始终走普通转发路径。其他本机、私网、链路
+本地、多播和已配置绕过 CIDR 也仍走普通转发路径。
 
 IPv4 令牌使用配置的回环重定向前缀。仅当
 `net.ipv4.conf.<interface>.route_localnet` 原值为关闭时，sing-box 才会临时启用，

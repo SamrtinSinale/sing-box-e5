@@ -34,6 +34,7 @@ func TestEBPFInboundListenOptions(t *testing.T) {
 		"reuse_addr": true,
 		"udp_timeout": "45s",
 		"detour": "detour-in",
+		"dns_mode": "off",
 		"network": "tcp"
 	}`), &inboundOptions); err != nil {
 		t.Fatal(err)
@@ -50,6 +51,9 @@ func TestEBPFInboundListenOptions(t *testing.T) {
 	}
 	if time.Duration(ebpfOptions.UDPTimeout) != 45*time.Second {
 		t.Fatalf("unexpected UDP timeout: %v", time.Duration(ebpfOptions.UDPTimeout))
+	}
+	if ebpfOptions.DNSMode != "off" {
+		t.Fatalf("unexpected DNS mode: %s", ebpfOptions.DNSMode)
 	}
 	network := ebpfOptions.Network.Build()
 	if len(network) != 1 || network[0] != "tcp" {

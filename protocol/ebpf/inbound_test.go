@@ -126,6 +126,28 @@ func TestNormalizeCgroupPathRejectsRelativePath(t *testing.T) {
 	}
 }
 
+func TestNormalizeDNSMode(t *testing.T) {
+	for _, test := range []struct {
+		input  string
+		output string
+	}{
+		{"", dnsModeHijack},
+		{dnsModeHijack, dnsModeHijack},
+		{dnsModeOff, dnsModeOff},
+	} {
+		output, err := normalizeDNSMode(test.input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if output != test.output {
+			t.Fatalf("unexpected DNS mode for %q: %q", test.input, output)
+		}
+	}
+	if _, err := normalizeDNSMode("disabled"); err == nil {
+		t.Fatal("expected an unknown DNS mode to be rejected")
+	}
+}
+
 func TestNormalizeRedirectAddresses(t *testing.T) {
 	tests := []struct {
 		name      string

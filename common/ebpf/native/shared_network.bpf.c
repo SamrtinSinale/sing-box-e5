@@ -199,10 +199,10 @@ NOINLINE bool proxy_ipv4(
     const __u8 destination[4],
     __u8 protocol,
     __u16 source_port,
-    __u16 destination_port) {
+    __u16 destination_port,
+    bool hijack_dns) {
     if (dhcp_packet(protocol, source_port, destination_port)) return false;
-    // Capture hotspot DNS before host and private-address bypass.
-    if (destination_port == 53U) return true;
+    if (destination_port == 53U) return hijack_dns;
     if (ipv4_builtin_bypass(destination)) return false;
     struct sb_lpm4_key key = {.prefixlen = 32U};
     __builtin_memcpy(key.addr, destination, 4U);
@@ -214,9 +214,10 @@ NOINLINE bool proxy_ipv6(
     const __u8 destination[16],
     __u8 protocol,
     __u16 source_port,
-    __u16 destination_port) {
+    __u16 destination_port,
+    bool hijack_dns) {
     if (dhcp_packet(protocol, source_port, destination_port)) return false;
-    if (destination_port == 53U) return true;
+    if (destination_port == 53U) return hijack_dns;
     if (ipv6_builtin_bypass(destination)) return false;
     struct sb_lpm6_key key = {.prefixlen = 128U};
     __builtin_memcpy(key.addr, destination, 16U);
@@ -459,7 +460,8 @@ NOINLINE int ingress_ipv4(
             (const __u8 *)&ip->destination,
             ip->protocol,
             source_port,
-            destination_port)) {
+            destination_port,
+            (control->flags & SB_SHARED_FLAG_DNS_HIJACK) != 0U)) {
         return TC_ACT_PIPE;
     }
 
@@ -582,7 +584,14 @@ NOINLINE int ingress_ipv6(
     if ((void *)(ports + 1) > data_end) return TC_ACT_PIPE;
     __u16 source_port = swap16(ports->source);
     __u16 destination_port = swap16(ports->destination);
-    if (!proxy_ipv6(ip->destination, protocol, source_port, destination_port)) return TC_ACT_PIPE;
+    if (!proxy_ipv6(
+            ip->destination,
+            protocol,
+            source_port,
+            destination_port,
+            (control->flags & SB_SHARED_FLAG_DNS_HIJACK) != 0U)) {
+        return TC_ACT_PIPE;
+    }
 
     __u32 zero = 0U;
     struct sb_shared_scratch *scratch = map_lookup(&shared_scratch, &zero);

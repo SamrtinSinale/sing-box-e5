@@ -18,6 +18,7 @@ const (
 
 type Policy struct {
 	EnableBypassCIDR bool
+	HijackDNS        bool
 	IncludeUID       []UIDRange
 	ExcludeUID       []UIDRange
 }

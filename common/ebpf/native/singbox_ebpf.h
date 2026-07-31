@@ -85,6 +85,7 @@ struct sb_ebpf_ipv6_cidr_lpm_key {
 struct sb_ebpf_inbound_config {
     uint8_t inbound_network;
     bool disable_ipv4;
+    bool hijack_dns;
     int stats_map_fd;
     uint8_t redirect_ipv4_prefix[4];
     uint32_t redirect_ipv4_prefix_bits;
@@ -138,6 +139,7 @@ int sb_ebpf_inbound_prepare(
     bool enable_udp,
     bool enable_ipv4,
     bool enable_bypass_cidr,
+    bool hijack_dns,
     const uint8_t redirect_ipv4[4],
     uint32_t redirect_ipv4_prefix_bits,
     bool enable_ipv6,

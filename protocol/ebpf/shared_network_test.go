@@ -59,14 +59,17 @@ func TestNormalizeSharedNetworkOptionsRejectsInvalid(t *testing.T) {
 }
 
 func TestValidateSharedNetworkProtocols(t *testing.T) {
-	if err := validateSharedNetworkProtocols(option.EBPFSharedNetworkOptions{}, false); err != nil {
+	if err := validateSharedNetworkProtocols(option.EBPFSharedNetworkOptions{}, false, dnsModeHijack); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateSharedNetworkProtocols(option.EBPFSharedNetworkOptions{Enabled: true}, true); err != nil {
+	if err := validateSharedNetworkProtocols(option.EBPFSharedNetworkOptions{Enabled: true}, true, dnsModeHijack); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateSharedNetworkProtocols(option.EBPFSharedNetworkOptions{Enabled: true}, false); err == nil {
-		t.Fatal("expected shared_network without UDP to be rejected")
+	if err := validateSharedNetworkProtocols(option.EBPFSharedNetworkOptions{Enabled: true}, false, dnsModeHijack); err == nil {
+		t.Fatal("expected shared_network DNS hijacking without UDP to be rejected")
+	}
+	if err := validateSharedNetworkProtocols(option.EBPFSharedNetworkOptions{Enabled: true}, false, dnsModeOff); err != nil {
+		t.Fatalf("shared_network with DNS disabled should allow TCP-only mode: %v", err)
 	}
 }
 

@@ -81,6 +81,7 @@ const (
 	sharedNetworkFlagIPv6
 	sharedNetworkFlagTCP
 	sharedNetworkFlagUDP
+	sharedNetworkFlagDNSHijack
 )
 
 type SharedNetworkBackend struct {
@@ -137,6 +138,7 @@ func PrepareSharedNetwork(
 		C.free(unsafe.Pointer(runtimeState))
 		return nil, osErrClosed
 	}
+	hijackDNS := parent.hijackDNS
 	var savedErrno C.int
 	result := C.singbox_ebpf_shared_network_prepare(
 		(*C.uint8_t)(unsafe.Pointer(&sharedNetworkObject[0])),
@@ -162,6 +164,9 @@ func PrepareSharedNetwork(
 	}
 	if enableUDP {
 		backend.control.Flags |= sharedNetworkFlagUDP
+	}
+	if hijackDNS {
+		backend.control.Flags |= sharedNetworkFlagDNSHijack
 	}
 	if redirectIPv4.IsValid() {
 		backend.control.Flags |= sharedNetworkFlagIPv4

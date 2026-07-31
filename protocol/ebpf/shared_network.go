@@ -82,9 +82,9 @@ func normalizeSharedNetworkOptions(options option.EBPFSharedNetworkOptions) (opt
 	return options, nil
 }
 
-func validateSharedNetworkProtocols(options option.EBPFSharedNetworkOptions, enableUDP bool) error {
-	if options.Enabled && !enableUDP {
-		return E.New("shared_network requires UDP to proxy hotspot DNS")
+func validateSharedNetworkProtocols(options option.EBPFSharedNetworkOptions, enableUDP bool, dnsMode string) error {
+	if options.Enabled && dnsMode == dnsModeHijack && !enableUDP {
+		return E.New("shared_network with dns_mode hijack requires UDP")
 	}
 	return nil
 }
@@ -131,6 +131,7 @@ func (s *sharedNetwork) Start(parentBackend *ECommon.Backend) error {
 	s.parent.logger.Info(
 		"eBPF shared-network ready: interfaces=[", s.tc.InterfaceString(),
 		"], listen_port=", s.listenPort,
+		", dns_mode=", s.parent.dnsMode,
 		", token_map_capacity=", ECommon.SharedNetworkMapCapacity,
 		", programs=[tc/ingress, tc/egress]",
 	)

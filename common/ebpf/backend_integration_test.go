@@ -17,7 +17,18 @@ func TestBackendProgramLoadIntegration(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Fatal("eBPF integration test requires root")
 	}
+	for _, hijackDNS := range []bool{true, false} {
+		name := "off"
+		if hijackDNS {
+			name = "hijack"
+		}
+		t.Run(name, func(t *testing.T) {
+			testBackendProgramLoad(t, hijackDNS)
+		})
+	}
+}
 
+func testBackendProgramLoad(t *testing.T, hijackDNS bool) {
 	backend, err := Prepare(
 		os.Getenv("SING_BOX_EBPF_INTEGRATION_CGROUP"),
 		65532,
@@ -25,7 +36,7 @@ func TestBackendProgramLoadIntegration(t *testing.T) {
 		true,
 		netip.MustParsePrefix("127.128.0.0/9"),
 		netip.MustParsePrefix("fd53:696e:672d:626f::/64"),
-		Policy{},
+		Policy{HijackDNS: hijackDNS},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -66,6 +77,9 @@ func TestBackendProgramLoadIntegration(t *testing.T) {
 	})
 	if sharedBackend.IngressProgramFD() < 0 || sharedBackend.EgressProgramFD() < 0 {
 		t.Fatal("shared-network token programs were not loaded")
+	}
+	if hasDNSHijack := sharedBackend.control.Flags&sharedNetworkFlagDNSHijack != 0; hasDNSHijack != hijackDNS {
+		t.Fatalf("unexpected shared-network DNS hijack flag: %t", hasDNSHijack)
 	}
 	if err = sharedBackend.UpdateHostAddresses([]netip.Addr{
 		netip.MustParseAddr("192.0.2.1"),

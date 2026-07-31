@@ -15,6 +15,9 @@ func TestSharedNetworkABI(t *testing.T) {
 	if size := unsafe.Sizeof(sharedNetworkRedirectKey{}); size != 40 {
 		t.Fatalf("unexpected shared-network redirect key size: %d", size)
 	}
+	if sharedNetworkFlagDNSHijack != 1<<4 {
+		t.Fatalf("unexpected shared-network DNS flag: %#x", sharedNetworkFlagDNSHijack)
+	}
 }
 
 func TestMakeSharedNetworkRedirectKey(t *testing.T) {

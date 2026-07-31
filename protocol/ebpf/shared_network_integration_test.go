@@ -68,7 +68,7 @@ func TestSharedNetworkDataPathIntegration(t *testing.T) {
 	}
 
 	redirectPrefix := netip.MustParsePrefix("127.128.0.0/9")
-	parent, err := ECommon.Prepare("", bridgePort, true, true, redirectPrefix, netip.Prefix{}, ECommon.Policy{})
+	parent, err := ECommon.Prepare("", bridgePort, true, true, redirectPrefix, netip.Prefix{}, ECommon.Policy{HijackDNS: true})
 	if err != nil {
 		t.Fatal(err)
 	}

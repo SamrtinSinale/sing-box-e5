@@ -15,6 +15,7 @@
 #define SB_SHARED_FLAG_IPV6 (1U << 1)
 #define SB_SHARED_FLAG_TCP (1U << 2)
 #define SB_SHARED_FLAG_UDP (1U << 3)
+#define SB_SHARED_FLAG_DNS_HIJACK (1U << 4)
 
 struct sb_shared_control {
     __u32 enabled;

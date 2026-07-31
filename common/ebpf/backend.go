@@ -15,6 +15,7 @@ static int singbox_ebpf_inbound_prepare(
 	bool enable_udp,
 	bool enable_ipv4,
 	bool enable_bypass_cidr,
+	bool hijack_dns,
 	const uint8_t *redirect_ipv4,
 	uint32_t redirect_ipv4_prefix_bits,
 	bool enable_ipv6,
@@ -31,6 +32,7 @@ static int singbox_ebpf_inbound_prepare(
 		enable_udp,
 		enable_ipv4,
 		enable_bypass_cidr,
+		hijack_dns,
 		redirect_ipv4,
 		redirect_ipv4_prefix_bits,
 		enable_ipv6,
@@ -100,6 +102,7 @@ type Backend struct {
 	bypassIPv6CIDR     []netip.Prefix
 	cgroupPath         string
 	enableUDP          bool
+	hijackDNS          bool
 	lookupMisses       atomic.Uint64
 	tcpRedirectDeletes atomic.Uint64
 	udpRedirectDeletes atomic.Uint64
@@ -205,6 +208,7 @@ func Prepare(
 		C.bool(enableUDP),
 		C.bool(redirectIPv4.IsValid()),
 		C.bool(policy.EnableBypassCIDR),
+		C.bool(policy.HijackDNS),
 		redirectIPv4Pointer,
 		redirectIPv4Bits,
 		C.bool(redirectIPv6.IsValid()),
@@ -234,6 +238,7 @@ func Prepare(
 		bypassIPv6CIDRMap: int(runtimeState.bypass_ipv6_cidr_map_fd),
 		cgroupPath:        cgroupPath,
 		enableUDP:         enableUDP,
+		hijackDNS:         policy.HijackDNS,
 	}
 	if err = populateUIDPolicyMap(int(runtimeState.include_uid_map_fd), includeUIDEntries); err != nil {
 		_ = backend.Close()

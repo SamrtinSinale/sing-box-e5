@@ -40,6 +40,8 @@ import (
 const (
 	defaultListenPort      = 65532
 	androidTetheringDNSUID = 1052
+	dnsModeHijack          = "hijack"
+	dnsModeOff             = "off"
 )
 
 var defaultRedirectIPv4 = netip.MustParsePrefix("127.128.0.0/9")
@@ -64,6 +66,7 @@ type Inbound struct {
 	listenPort        uint16
 	enableTCP         bool
 	enableUDP         bool
+	dnsMode           string
 	redirectIPv4      netip.Prefix
 	redirectIPv6      netip.Prefix
 	policy            ECommon.Policy
@@ -96,6 +99,10 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	if err != nil {
 		return nil, err
 	}
+	dnsMode, err := normalizeDNSMode(options.DNSMode)
+	if err != nil {
+		return nil, err
+	}
 	includeUID, err := parseUIDRanges(options.IncludeUID, options.IncludeUIDRange)
 	if err != nil {
 		return nil, E.Cause(err, "parse include_uid_range")
@@ -112,7 +119,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	network := options.Network.Build()
 	enableTCP := common.Contains(network, N.NetworkTCP)
 	enableUDP := common.Contains(network, N.NetworkUDP)
-	if err = validateSharedNetworkProtocols(sharedOptions, enableUDP); err != nil {
+	if err = validateSharedNetworkProtocols(sharedOptions, enableUDP, dnsMode); err != nil {
 		return nil, err
 	}
 	networkManager := service.FromContext[adapter.NetworkManager](ctx)
@@ -130,10 +137,12 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		listenPort:     listenOptions.ListenPort,
 		enableTCP:      enableTCP,
 		enableUDP:      enableUDP,
+		dnsMode:        dnsMode,
 		redirectIPv4:   redirectIPv4,
 		redirectIPv6:   redirectIPv6,
 		sharedOptions:  sharedOptions,
 		policy: ECommon.Policy{
+			HijackDNS:  dnsMode == dnsModeHijack,
 			IncludeUID: includeUID,
 			ExcludeUID: excludeUID,
 		},
@@ -157,6 +166,17 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		inbound.listener6 = inbound.newListener(network, true)
 	}
 	return inbound, nil
+}
+
+func normalizeDNSMode(mode string) (string, error) {
+	switch mode {
+	case "", dnsModeHijack:
+		return dnsModeHijack, nil
+	case dnsModeOff:
+		return dnsModeOff, nil
+	default:
+		return "", E.New("unknown eBPF dns_mode: ", mode)
+	}
 }
 
 func normalizeCgroupPath(cgroupPath string) (string, error) {
@@ -339,6 +359,7 @@ func (i *Inbound) Start(stage adapter.StartStage) error {
 		bypassIPv4Count, bypassIPv6Count := backend.BypassCIDRCount()
 		i.logger.Info(
 			"eBPF inbound attached: cgroup=", backend.CgroupPath(),
+			", dns_mode=", i.dnsMode,
 			", redirect_address=[", strings.Join(i.redirectAddressStrings(), ", "), "]",
 			", bypass_cidr={ipv4:", bypassIPv4Count, ", ipv6:", bypassIPv6Count, "}",
 			", redirect_map_capacity={tcp:", ECommon.TCPRedirectMapCapacity,
