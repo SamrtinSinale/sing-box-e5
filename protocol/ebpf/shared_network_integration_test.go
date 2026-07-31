@@ -1,4 +1,4 @@
-//go:build with_ebpf && linux && cgo && (386 || amd64 || arm || arm64)
+//go:build with_ebpf && linux && cgo
 
 package ebpf
 
