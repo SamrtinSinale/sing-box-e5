@@ -466,6 +466,21 @@ NOINLINE int ingress_ipv4(
         return TC_ACT_PIPE;
     }
 
+    if (skb_pull_data(skb, 0U) != 0) return TC_ACT_PIPE;
+    data = (void *)(long)skb->data;
+    data_end = (void *)(long)skb->data_end;
+    ip = data + l3_offset;
+    if ((void *)(ip + 1) > data_end || ip->version != 4U || ip->ihl < 5U) return TC_ACT_PIPE;
+    header_length = (__u32)ip->ihl * 4U;
+    ports = (void *)ip + header_length;
+    if ((void *)(ports + 1) > data_end ||
+        (swap16(ip->fragment_offset) & IP_FRAGMENT_MASK) != 0U ||
+        !selected_protocol(ip->protocol, control)) {
+        return TC_ACT_PIPE;
+    }
+    source_port = swap16(ports->source);
+    destination_port = swap16(ports->destination);
+
     __u32 zero = 0U;
     struct sb_shared_scratch *scratch = map_lookup(&shared_scratch, &zero);
     if (scratch == 0) return TC_ACT_PIPE;
@@ -509,6 +524,21 @@ NOINLINE int egress_ipv4(
         return TC_ACT_SHOT;
     }
     if (swap16(ports->source) != control->bridge_port) return TC_ACT_PIPE;
+
+    if (skb_pull_data(skb, 0U) != 0) return TC_ACT_PIPE;
+    data = (void *)(long)skb->data;
+    data_end = (void *)(long)skb->data_end;
+    ip = data + l3_offset;
+    if ((void *)(ip + 1) > data_end || ip->version != 4U || ip->ihl < 5U) return TC_ACT_SHOT;
+    header_length = (__u32)ip->ihl * 4U;
+    ports = (void *)ip + header_length;
+    if ((void *)(ports + 1) > data_end ||
+        (swap16(ip->fragment_offset) & IP_FRAGMENT_MASK) != 0U ||
+        !selected_protocol(ip->protocol, control) ||
+        !ipv4_token_address(ip->source, control) ||
+        swap16(ports->source) != control->bridge_port) {
+        return TC_ACT_SHOT;
+    }
 
     __u32 zero = 0U;
     struct sb_shared_scratch *scratch = map_lookup(&shared_scratch, &zero);
@@ -594,6 +624,19 @@ NOINLINE int ingress_ipv6(
         return TC_ACT_PIPE;
     }
 
+    if (skb_pull_data(skb, 0U) != 0) return TC_ACT_PIPE;
+    data = (void *)(long)skb->data;
+    data_end = (void *)(long)skb->data_end;
+    ip = data + l3_offset;
+    if ((void *)(ip + 1) > data_end || (swap32(ip->version_flow) >> 28U) != 6U) return TC_ACT_PIPE;
+    protocol = 0U;
+    transport = ipv6_transport_offset(data, data_end, l3_offset, &protocol);
+    if (transport < 0 || !selected_protocol(protocol, control)) return TC_ACT_PIPE;
+    ports = data + transport;
+    if ((void *)(ports + 1) > data_end) return TC_ACT_PIPE;
+    source_port = swap16(ports->source);
+    destination_port = swap16(ports->destination);
+
     __u32 zero = 0U;
     struct sb_shared_scratch *scratch = map_lookup(&shared_scratch, &zero);
     if (scratch == 0) return TC_ACT_PIPE;
@@ -634,6 +677,23 @@ NOINLINE int egress_ipv6(
     if ((void *)(ports + 1) > data_end) return TC_ACT_SHOT;
     if (swap16(ports->source) != control->bridge_port) return TC_ACT_PIPE;
 
+    if (skb_pull_data(skb, 0U) != 0) return TC_ACT_PIPE;
+    data = (void *)(long)skb->data;
+    data_end = (void *)(long)skb->data_end;
+    ip = data + l3_offset;
+    if ((void *)(ip + 1) > data_end ||
+        (swap32(ip->version_flow) >> 28U) != 6U ||
+        !ipv6_token_address(ip->source, control)) {
+        return TC_ACT_SHOT;
+    }
+    protocol = 0U;
+    transport = ipv6_transport_offset(data, data_end, l3_offset, &protocol);
+    if (transport < 0 || !selected_protocol(protocol, control)) return TC_ACT_SHOT;
+    ports = data + transport;
+    if ((void *)(ports + 1) > data_end || swap16(ports->source) != control->bridge_port) {
+        return TC_ACT_SHOT;
+    }
+
     __u32 zero = 0U;
     struct sb_shared_scratch *scratch = map_lookup(&shared_scratch, &zero);
     if (scratch == 0) return TC_ACT_SHOT;
@@ -666,7 +726,6 @@ NOINLINE int classify(struct __sk_buff *skb, bool ingress) {
     __u32 zero = 0U;
     struct sb_shared_control *control = map_lookup(&shared_control, &zero);
     if (control == 0 || control->enabled == 0U) return TC_ACT_PIPE;
-    if (skb_pull_data(skb, 0U) != 0) return TC_ACT_PIPE;
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
     struct ethernet_header *ethernet = data;
