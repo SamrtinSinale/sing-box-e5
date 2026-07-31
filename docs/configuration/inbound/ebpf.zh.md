@@ -97,6 +97,9 @@ DNS 处理模式。可选值：
 提供可用的独立 DNS 服务，并且明确希望热点 DNS 不经过 sing-box 时才应使用 `off`。
 `off` 模式不会代理热点 DNS，如果没有独立 DNS 路径，查询可能泄露或失败。
 
+关于该选项的数据路径、性能边界以及与 dae、TUN、Redirect 和 TProxy 的区别，参阅
+[eBPF 入站实现对比](/manual/misc/ebpf-inbound-comparison/)。
+
 #### cgroup_path
 
 需要拦截其本机流量的 cgroup v2 层级绝对路径。留空时，sing-box 自动发现
