@@ -118,9 +118,9 @@ struct udp_header_min {
     }
 
 EXTERNAL_MAP(shared_control, __u32, struct sb_shared_control, 1U);
-EXTERNAL_MAP(shared_original_to_token, struct sb_shared_original_key, struct sb_shared_token_value, SB_SHARED_NETWORK_MAP_ENTRIES);
-EXTERNAL_MAP(shared_token_to_original, struct sb_shared_reverse_key, struct sb_shared_reverse_value, SB_SHARED_NETWORK_MAP_ENTRIES);
-EXTERNAL_MAP(shared_redirect, struct sb_shared_redirect_key, struct sb_shared_redirect_value, SB_SHARED_NETWORK_MAP_ENTRIES);
+EXTERNAL_MAP(shared_original_to_token, struct sb_shared_original_key, struct sb_shared_token_value, SB_SHARED_NETWORK_OBJECT_MAP_ENTRIES);
+EXTERNAL_MAP(shared_token_to_original, struct sb_shared_reverse_key, struct sb_shared_reverse_value, SB_SHARED_NETWORK_OBJECT_MAP_ENTRIES);
+EXTERNAL_MAP(shared_redirect, struct sb_shared_redirect_key, struct sb_shared_redirect_value, SB_SHARED_NETWORK_OBJECT_MAP_ENTRIES);
 EXTERNAL_MAP(shared_host_ipv4, struct sb_lpm4_key, __u8, 256U);
 EXTERNAL_MAP(shared_host_ipv6, struct sb_lpm6_key, __u8, 256U);
 EXTERNAL_MAP(shared_bypass_ipv4, struct sb_lpm4_key, __u8, 65536U);

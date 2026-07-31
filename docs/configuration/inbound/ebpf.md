@@ -36,9 +36,15 @@ It is included only in builds made with the `with_ebpf` build tag and cgo.
   "include_uid_range": [],
   "exclude_uid": [],
   "exclude_uid_range": [],
+  "map_capacity": {
+    "tcp_redirect": 65536,
+    "udp_redirect": 65536,
+    "socket_bypass": 65536
+  },
   "shared_network": {
     "enabled": false,
-    "include_interface": []
+    "include_interface": [],
+    "map_capacity": 65536
   }
 }
 ```
@@ -112,6 +118,19 @@ intercepted. If empty, sing-box discovers the cgroup2 mount and uses its root.
 On standard Linux, place selected services in a dedicated cgroup and configure
 that path when system-wide local interception is not desired. This field does
 not restrict forwarded traffic selected by `shared_network`.
+
+#### map_capacity
+
+Kernel map capacities for locally generated traffic. `tcp_redirect` controls
+TCP redirect state. `udp_redirect` controls the UDP redirect, connected-token,
+and peer maps together. `socket_bypass` controls protected outbound socket
+cookies.
+
+Each field defaults to `65536` and accepts `1` through `1048576`. Larger maps
+support more concurrent state but consume more locked kernel memory. Changes
+take effect when the inbound is restarted. Setting redirect maps too small can
+reject new flows; an undersized `socket_bypass` map can evict protected sockets
+and cause self-interception.
 
 #### include_uid
 
@@ -193,10 +212,11 @@ destination reuse an existing map entry. TCP and connected UDP additionally
 mix the socket `SO_COOKIE` into the token, preventing concurrent sockets to the
 same destination from sharing lifecycle state.
 
-TCP and UDP use separate redirect maps with 65536 entries each. The maps do not
-evict or overwrite entries. A token collision uses up to eight deterministic
-probes, and a full map rejects the new flow instead of routing it to another
-destination. Large prefixes keep this lookup path close to one probe. The
+TCP and UDP use separate redirect maps whose capacities are configured by
+`map_capacity`. The maps do not evict or overwrite entries. A token collision
+uses up to eight deterministic probes, and a full map rejects the new flow
+instead of routing it to another destination. Large prefixes keep this lookup
+path close to one probe. The
 default uses the less commonly used upper half of the IPv4 loopback range while
 retaining 23 bits of token space. The IPv6 example is a sing-box specific ULA
 prefix. Before installing the local route, sing-box rejects a prefix that
@@ -281,6 +301,10 @@ TCP flow state is released when the routed connection closes. UDP flow state
 is reference-counted by client and token, then released when its NAT session
 closes. Each release removes the original-to-token, token-to-original, and
 listener redirect entries together.
+
+`shared_network.map_capacity` controls each of those three shared flow maps.
+It defaults to `65536` and accepts `1` through `1048576`; increasing it raises
+locked kernel-memory use for all three maps.
 
 DHCP ports 67, 68, 546, and 547 always bypass TC. In `dns_mode: hijack`,
 destination port 53 is captured before host, private-network, or

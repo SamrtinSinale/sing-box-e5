@@ -7,14 +7,31 @@ import (
 )
 
 const (
-	ProtocolTCP            = 6
-	ProtocolUDP            = 17
-	TCPRedirectMapCapacity = 65536
-	UDPRedirectMapCapacity = 65536
+	ProtocolTCP                = 6
+	ProtocolUDP                = 17
+	TCPRedirectMapCapacity     = 65536
+	UDPRedirectMapCapacity     = 65536
+	SocketBypassMapCapacity    = 65536
+	SharedNetworkMapCapacity   = 65536
+	MaxConfigurableMapCapacity = 1 << 20
 
 	addressFamilyIPv4 = 2
 	addressFamilyIPv6 = 10
 )
+
+type MapCapacity struct {
+	TCPRedirect  uint32
+	UDPRedirect  uint32
+	SocketBypass uint32
+}
+
+func DefaultMapCapacity() MapCapacity {
+	return MapCapacity{
+		TCPRedirect:  TCPRedirectMapCapacity,
+		UDPRedirect:  UDPRedirectMapCapacity,
+		SocketBypass: SocketBypassMapCapacity,
+	}
+}
 
 type OriginalDestination struct {
 	Destination  netip.AddrPort

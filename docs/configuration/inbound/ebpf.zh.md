@@ -35,9 +35,15 @@ eBPF 入站通过 cgroup socket-address 程序拦截本机产生的 TCP 和 UDP 
   "include_uid_range": [],
   "exclude_uid": [],
   "exclude_uid_range": [],
+  "map_capacity": {
+    "tcp_redirect": 65536,
+    "udp_redirect": 65536,
+    "socket_bypass": 65536
+  },
   "shared_network": {
     "enabled": false,
-    "include_interface": []
+    "include_interface": [],
+    "map_capacity": 65536
   }
 }
 ```
@@ -107,6 +113,17 @@ cgroup2 挂载点并使用其根层级。在标准 Linux 上，如不希望拦�
 可把指定服务放入专用 cgroup 并配置此路径。此字段不限制 `shared_network`
 选中的转发流量。
 
+#### map_capacity
+
+本机流量使用的内核 map 容量。`tcp_redirect` 控制 TCP 重定向状态；
+`udp_redirect` 同时控制 UDP 重定向、connected token 和 peer 三张 map；
+`socket_bypass` 控制受保护出站 socket 的 cookie map。
+
+各字段默认值均为 `65536`，允许范围为 `1` 到 `1048576`。较大的容量可以容纳更多
+并发状态，但会消耗更多锁定的内核内存。修改会在重启该入站后生效。redirect map
+过小会拒绝新流量；`socket_bypass` map 过小则可能淘汰仍在使用的受保护 socket，
+造成自身流量被再次拦截。
+
 #### include_uid
 
 需要拦截的进程 UID 列表。
@@ -174,8 +191,9 @@ socket 按 IPv4 处理。
 复用已有 map 条目。TCP 和已连接 UDP 还会把 socket `SO_COOKIE` 混入令牌，避免
 发往同一目的地的并发 socket 错误共享生命周期状态。
 
-redirect map 不会淘汰或覆盖已有条目。令牌冲突时最多执行八次确定性探测；map
-容量耗尽时会拒绝新流量，而不会将其错误路由到其他目的地。较大的前缀可使热路径
+TCP 和 UDP 使用由 `map_capacity` 分别配置容量的 redirect map；这些 map 不会
+淘汰或覆盖已有条目。令牌冲突时最多执行八次确定性探测；map 容量耗尽时会拒绝
+新流量，而不会将其错误路由到其他目的地。较大的前缀可使热路径
 通常只需一次探测。默认值使用 IPv4 回环范围中较少被显式使用的后半段，同时保留
 23 位令牌空间；IPv6 示例使用 sing-box 专用的 ULA 前缀。自定义前缀不得与设备
 需要访问的任何目的网络重叠。
@@ -238,6 +256,10 @@ sing-box 会卸载其状态，同时保持本机 eBPF 入站运行；同名接�
 TCP 流状态会在路由连接关闭时释放。UDP 流状态按客户端和令牌引用计数，并在对应 NAT
 会话关闭时释放。每次释放会一并删除原目标到令牌、令牌到原目标及 listener 重定向
 三张 map 中的条目。
+
+`shared_network.map_capacity` 同时控制上述三张 shared flow map 的容量。默认值为
+`65536`，允许范围为 `1` 到 `1048576`；增大它会同时提高三张 map 的锁定内核内存
+占用。
 
 DHCP 端口 67、68、546 和 547 始终绕过 TC。`dns_mode: hijack` 下，目标端口 53
 会在本机地址、私网及 `bypass_rule_set` 判断之前被捕获，包括发给热点网关的 DNS

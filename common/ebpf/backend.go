@@ -23,6 +23,9 @@ static int singbox_ebpf_inbound_prepare(
 	uint32_t redirect_ipv6_prefix_bits,
 	uint32_t include_uid_entries,
 	uint32_t exclude_uid_entries,
+	uint32_t tcp_redirect_map_capacity,
+	uint32_t udp_redirect_map_capacity,
+	uint32_t socket_bypass_map_capacity,
 	struct sb_ebpf_inbound_runtime *runtime,
 	int *saved_errno) {
 	int result = sb_ebpf_inbound_prepare(
@@ -40,6 +43,9 @@ static int singbox_ebpf_inbound_prepare(
 		redirect_ipv6_prefix_bits,
 		include_uid_entries,
 		exclude_uid_entries,
+		tcp_redirect_map_capacity,
+		udp_redirect_map_capacity,
+		socket_bypass_map_capacity,
 		runtime);
 	if (result != 0) *saved_errno = errno;
 	return result;
@@ -128,6 +134,31 @@ func Prepare(
 	redirectIPv6 netip.Prefix,
 	policy Policy,
 ) (*Backend, error) {
+	return PrepareWithMapCapacity(
+		cgroupPath,
+		listenPort,
+		enableTCP,
+		enableUDP,
+		redirectIPv4,
+		redirectIPv6,
+		DefaultMapCapacity(),
+		policy,
+	)
+}
+
+func PrepareWithMapCapacity(
+	cgroupPath string,
+	listenPort uint16,
+	enableTCP bool,
+	enableUDP bool,
+	redirectIPv4 netip.Prefix,
+	redirectIPv6 netip.Prefix,
+	mapCapacity MapCapacity,
+	policy Policy,
+) (*Backend, error) {
+	if err := validateMapCapacity(mapCapacity); err != nil {
+		return nil, err
+	}
 	if redirectIPv4.IsValid() {
 		redirectIPv4 = redirectIPv4.Masked()
 		if !redirectIPv4.Addr().Is4() {
@@ -211,6 +242,9 @@ func Prepare(
 		redirectIPv6Bits,
 		C.uint32_t(len(includeUIDEntries)),
 		C.uint32_t(len(excludeUIDEntries)),
+		C.uint32_t(mapCapacity.TCPRedirect),
+		C.uint32_t(mapCapacity.UDPRedirect),
+		C.uint32_t(mapCapacity.SocketBypass),
 		runtimeState,
 		&savedErrno,
 	) != 0 {
@@ -243,6 +277,22 @@ func Prepare(
 		return nil, E.Cause(err, "populate exclude_uid eBPF map")
 	}
 	return backend, nil
+}
+
+func validateMapCapacity(capacity MapCapacity) error {
+	for _, entry := range []struct {
+		name  string
+		value uint32
+	}{
+		{"tcp_redirect", capacity.TCPRedirect},
+		{"udp_redirect", capacity.UDPRedirect},
+		{"socket_bypass", capacity.SocketBypass},
+	} {
+		if entry.value == 0 || entry.value > MaxConfigurableMapCapacity {
+			return E.New("invalid eBPF ", entry.name, " map capacity: ", entry.value)
+		}
+	}
+	return nil
 }
 
 func compileUIDPolicy(name string, uidRanges []UIDRange) ([]uidLPMKey, error) {

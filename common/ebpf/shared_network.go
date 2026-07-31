@@ -13,6 +13,7 @@ static int singbox_ebpf_shared_network_prepare(
 	size_t object_size,
 	int bypass_ipv4_map_fd,
 	int bypass_ipv6_map_fd,
+	uint32_t map_capacity,
 	struct sb_ebpf_shared_network_runtime *runtime,
 	int *saved_errno) {
 	int result = sb_ebpf_shared_network_prepare(
@@ -20,6 +21,7 @@ static int singbox_ebpf_shared_network_prepare(
 		object_size,
 		bypass_ipv4_map_fd,
 		bypass_ipv6_map_fd,
+		map_capacity,
 		runtime);
 	if (result != 0) *saved_errno = errno;
 	return result;
@@ -48,8 +50,6 @@ import (
 
 	"golang.org/x/sys/unix"
 )
-
-const SharedNetworkMapCapacity = 65536
 
 //go:embed native/shared_network.bpf.o
 var sharedNetworkObject []byte
@@ -141,8 +141,31 @@ func PrepareSharedNetwork(
 	redirectIPv4 netip.Prefix,
 	redirectIPv6 netip.Prefix,
 ) (*SharedNetworkBackend, error) {
+	return PrepareSharedNetworkWithMapCapacity(
+		parent,
+		bridgePort,
+		enableTCP,
+		enableUDP,
+		redirectIPv4,
+		redirectIPv6,
+		SharedNetworkMapCapacity,
+	)
+}
+
+func PrepareSharedNetworkWithMapCapacity(
+	parent *Backend,
+	bridgePort uint16,
+	enableTCP bool,
+	enableUDP bool,
+	redirectIPv4 netip.Prefix,
+	redirectIPv6 netip.Prefix,
+	mapCapacity uint32,
+) (*SharedNetworkBackend, error) {
 	if parent == nil {
 		return nil, osErrClosed
+	}
+	if mapCapacity == 0 || mapCapacity > MaxConfigurableMapCapacity {
+		return nil, E.New("invalid shared-network map capacity: ", mapCapacity)
 	}
 	if bridgePort == 0 {
 		return nil, E.New("missing shared-network listener port")
@@ -186,6 +209,7 @@ func PrepareSharedNetwork(
 		C.size_t(len(sharedNetworkObject)),
 		C.int(parent.bypassIPv4CIDRMap),
 		C.int(parent.bypassIPv6CIDRMap),
+		C.uint32_t(mapCapacity),
 		runtimeState,
 		&savedErrno,
 	)

@@ -69,9 +69,11 @@ type Inbound struct {
 	dnsMode           string
 	redirectIPv4      netip.Prefix
 	redirectIPv6      netip.Prefix
+	mapCapacity       ECommon.MapCapacity
 	policy            ECommon.Policy
 	localRoutes       []*localRoute
 	sharedOptions     option.EBPFSharedNetworkOptions
+	sharedMapCapacity uint32
 	sharedNetwork     *sharedNetwork
 	backendAccess     sync.RWMutex
 	closeAccess       sync.Mutex
@@ -101,6 +103,10 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	if err != nil {
 		return nil, err
 	}
+	mapCapacity, err := normalizeMapCapacity(options.MapCapacity)
+	if err != nil {
+		return nil, err
+	}
 	includeUID, err := parseUIDRanges(options.IncludeUID, options.IncludeUIDRange)
 	if err != nil {
 		return nil, E.Cause(err, "parse include_uid_range")
@@ -111,6 +117,14 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	}
 	excludeUID = append(excludeUID, platformExcludedUIDRanges(runtime.GOOS)...)
 	sharedOptions, err := normalizeSharedNetworkOptions(options.SharedNetwork)
+	if err != nil {
+		return nil, err
+	}
+	sharedMapCapacity, err := normalizeMapCapacityValue(
+		"shared_network.map_capacity",
+		options.SharedNetwork.MapCapacity,
+		ECommon.SharedNetworkMapCapacity,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -125,20 +139,22 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		return nil, E.New("missing network manager")
 	}
 	inbound := &Inbound{
-		Adapter:        inbound.NewAdapter(C.TypeEBPF, tag),
-		ctx:            ctx,
-		router:         router,
-		logger:         logger,
-		networkManager: networkManager,
-		listenOptions:  listenOptions,
-		cgroupPath:     cgroupPath,
-		listenPort:     listenOptions.ListenPort,
-		enableTCP:      enableTCP,
-		enableUDP:      enableUDP,
-		dnsMode:        dnsMode,
-		redirectIPv4:   redirectIPv4,
-		redirectIPv6:   redirectIPv6,
-		sharedOptions:  sharedOptions,
+		Adapter:           inbound.NewAdapter(C.TypeEBPF, tag),
+		ctx:               ctx,
+		router:            router,
+		logger:            logger,
+		networkManager:    networkManager,
+		listenOptions:     listenOptions,
+		cgroupPath:        cgroupPath,
+		listenPort:        listenOptions.ListenPort,
+		enableTCP:         enableTCP,
+		enableUDP:         enableUDP,
+		dnsMode:           dnsMode,
+		redirectIPv4:      redirectIPv4,
+		redirectIPv6:      redirectIPv6,
+		mapCapacity:       mapCapacity,
+		sharedOptions:     sharedOptions,
+		sharedMapCapacity: sharedMapCapacity,
 		policy: ECommon.Policy{
 			HijackDNS:  dnsMode == dnsModeHijack,
 			IncludeUID: includeUID,
@@ -175,6 +191,45 @@ func normalizeDNSMode(mode string) (string, error) {
 	default:
 		return "", E.New("unknown eBPF dns_mode: ", mode)
 	}
+}
+
+func normalizeMapCapacity(options option.EBPFMapCapacityOptions) (ECommon.MapCapacity, error) {
+	capacity := ECommon.DefaultMapCapacity()
+	var err error
+	capacity.TCPRedirect, err = normalizeMapCapacityValue(
+		"map_capacity.tcp_redirect", options.TCPRedirect, capacity.TCPRedirect,
+	)
+	if err != nil {
+		return ECommon.MapCapacity{}, err
+	}
+	capacity.UDPRedirect, err = normalizeMapCapacityValue(
+		"map_capacity.udp_redirect", options.UDPRedirect, capacity.UDPRedirect,
+	)
+	if err != nil {
+		return ECommon.MapCapacity{}, err
+	}
+	capacity.SocketBypass, err = normalizeMapCapacityValue(
+		"map_capacity.socket_bypass", options.SocketBypass, capacity.SocketBypass,
+	)
+	if err != nil {
+		return ECommon.MapCapacity{}, err
+	}
+	return capacity, nil
+}
+
+func normalizeMapCapacityValue(name string, configured *option.EBPFMapCapacity, defaultValue uint32) (uint32, error) {
+	if configured == nil {
+		return defaultValue, nil
+	}
+	value := uint32(*configured)
+	if value == 0 || value > ECommon.MaxConfigurableMapCapacity {
+		return 0, E.New(
+			name,
+			" must be between 1 and ",
+			ECommon.MaxConfigurableMapCapacity,
+		)
+	}
+	return value, nil
 }
 
 func normalizeCgroupPath(cgroupPath string) (string, error) {
@@ -306,8 +361,8 @@ func (i *Inbound) Start(stage adapter.StartStage) error {
 	case adapter.StartStateInitialize:
 		policy := i.policy
 		policy.EnableBypassCIDR = true
-		backend, err := ECommon.Prepare(i.cgroupPath, i.listenPort,
-			i.enableTCP, i.enableUDP, i.redirectIPv4, i.redirectIPv6, policy)
+		backend, err := ECommon.PrepareWithMapCapacity(i.cgroupPath, i.listenPort,
+			i.enableTCP, i.enableUDP, i.redirectIPv4, i.redirectIPv6, i.mapCapacity, policy)
 		if err != nil {
 			return err
 		}
@@ -360,8 +415,9 @@ func (i *Inbound) Start(stage adapter.StartStage) error {
 			", dns_mode=", i.dnsMode,
 			", redirect_address=[", strings.Join(i.redirectAddressStrings(), ", "), "]",
 			", bypass_cidr={ipv4:", bypassIPv4Count, ", ipv6:", bypassIPv6Count, "}",
-			", redirect_map_capacity={tcp:", ECommon.TCPRedirectMapCapacity,
-			", udp:", ECommon.UDPRedirectMapCapacity, "}",
+			", map_capacity={tcp_redirect:", i.mapCapacity.TCPRedirect,
+			", udp_redirect:", i.mapCapacity.UDPRedirect,
+			", socket_bypass:", i.mapCapacity.SocketBypass, "}",
 			", programs=[", strings.Join(backend.AttachedPrograms(), ", "), "]",
 		)
 	}

@@ -55,6 +55,7 @@ type sharedNetwork struct {
 	udpNat      *udpnat.Service
 	udpClients  udpClientTable
 	listenPort  uint16
+	mapCapacity uint32
 	closeAccess sync.Mutex
 }
 
@@ -94,8 +95,9 @@ func validateSharedNetworkProtocols(options option.EBPFSharedNetworkOptions, ena
 
 func newSharedNetwork(parent *Inbound, options option.EBPFSharedNetworkOptions) *sharedNetwork {
 	shared := &sharedNetwork{
-		parent:     parent,
-		interfaces: append([]string(nil), options.IncludeInterface...),
+		parent:      parent,
+		interfaces:  append([]string(nil), options.IncludeInterface...),
+		mapCapacity: parent.sharedMapCapacity,
 	}
 	udpTimeout := C.UDPTimeout
 	if parent.listenOptions.UDPTimeout != 0 {
@@ -109,13 +111,14 @@ func (s *sharedNetwork) Start(parentBackend *ECommon.Backend) error {
 	if err := s.startListeners(); err != nil {
 		return E.Errors(err, s.closeListeners())
 	}
-	backend, err := ECommon.PrepareSharedNetwork(
+	backend, err := ECommon.PrepareSharedNetworkWithMapCapacity(
 		parentBackend,
 		s.listenPort,
 		s.parent.enableTCP,
 		s.parent.enableUDP,
 		s.parent.redirectIPv4,
 		s.parent.redirectIPv6,
+		s.mapCapacity,
 	)
 	if err != nil {
 		return E.Errors(err, s.closeListeners())
@@ -137,7 +140,7 @@ func (s *sharedNetwork) Start(parentBackend *ECommon.Backend) error {
 		"], listen_port=", s.listenPort,
 		", dns_mode=", s.parent.dnsMode,
 		", tc_priority=", sharedNetworkTCPriority,
-		", token_map_capacity=", ECommon.SharedNetworkMapCapacity,
+		", map_capacity=", s.mapCapacity,
 		", programs=[tc/ingress, tc/egress]",
 	)
 	return nil

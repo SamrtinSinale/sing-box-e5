@@ -15,6 +15,10 @@ func Prepare(string, uint16, bool, bool, netip.Prefix, netip.Prefix, Policy) (*B
 	return nil, E.New("eBPF inbound is not supported by this build: cgo is disabled")
 }
 
+func PrepareWithMapCapacity(string, uint16, bool, bool, netip.Prefix, netip.Prefix, MapCapacity, Policy) (*Backend, error) {
+	return nil, E.New("eBPF inbound is not supported by this build: cgo is disabled")
+}
+
 func (b *Backend) Attach() error {
 	return E.New("eBPF inbound is not supported by this build: cgo is disabled")
 }

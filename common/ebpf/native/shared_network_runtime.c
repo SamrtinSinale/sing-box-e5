@@ -48,8 +48,10 @@ int sb_ebpf_shared_network_prepare(
     size_t object_size,
     int bypass_ipv4_map_fd,
     int bypass_ipv6_map_fd,
+    uint32_t map_capacity,
     struct sb_ebpf_shared_network_runtime *runtime) {
-    if (object == NULL || object_size == 0U || runtime == NULL) {
+    if (object == NULL || object_size == 0U || runtime == NULL ||
+        map_capacity == 0U || map_capacity > SB_EBPF_MAX_CONFIGURABLE_MAP_ENTRIES) {
         errno = EINVAL;
         return -1;
     }
@@ -66,21 +68,21 @@ int sb_ebpf_shared_network_prepare(
         BPF_MAP_TYPE_LRU_HASH,
         sizeof(struct sb_shared_original_key),
         sizeof(struct sb_shared_token_value),
-        SB_SHARED_NETWORK_MAP_ENTRIES,
+        map_capacity,
         0U);
     stage = "create token-to-original map";
     runtime->token_to_original_map_fd = sb_ebpf_create_map(
         BPF_MAP_TYPE_LRU_HASH,
         sizeof(struct sb_shared_reverse_key),
         sizeof(struct sb_shared_reverse_value),
-        SB_SHARED_NETWORK_MAP_ENTRIES,
+        map_capacity,
         0U);
     stage = "create redirect map";
     runtime->redirect_map_fd = sb_ebpf_create_map(
         BPF_MAP_TYPE_LRU_HASH,
         sizeof(struct sb_shared_redirect_key),
         sizeof(struct sb_shared_redirect_value),
-        SB_SHARED_NETWORK_MAP_ENTRIES,
+        map_capacity,
         0U);
     stage = "create host maps";
     runtime->host_ipv4_map_fd = shared_network_create_lpm4();

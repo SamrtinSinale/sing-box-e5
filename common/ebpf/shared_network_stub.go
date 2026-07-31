@@ -9,8 +9,6 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 )
 
-const SharedNetworkMapCapacity = 65536
-
 type SharedNetworkBackend struct{}
 type SharedNetworkFlow struct{}
 
@@ -21,6 +19,18 @@ func PrepareSharedNetwork(
 	bool,
 	netip.Prefix,
 	netip.Prefix,
+) (*SharedNetworkBackend, error) {
+	return nil, unsupportedSharedNetworkError()
+}
+
+func PrepareSharedNetworkWithMapCapacity(
+	*Backend,
+	uint16,
+	bool,
+	bool,
+	netip.Prefix,
+	netip.Prefix,
+	uint32,
 ) (*SharedNetworkBackend, error) {
 	return nil, unsupportedSharedNetworkError()
 }

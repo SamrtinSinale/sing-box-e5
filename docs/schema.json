@@ -3524,6 +3524,27 @@
       "type": "string",
       "pattern": "^[-+]?(((\\d+(\\.\\d*)?|\\.\\d+)(ns|us|µs|μs|ms|s|m|h|d))+|0)$"
     },
+    "EBPFMapCapacityOptions": {
+      "type": "object",
+      "properties": {
+        "tcp_redirect": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "udp_redirect": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "socket_bypass": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        }
+      },
+      "additionalProperties": false
+    },
     "EBPFSharedNetworkOptions": {
       "type": "object",
       "properties": {
@@ -3542,6 +3563,11 @@
               }
             }
           ]
+        },
+        "map_capacity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
         }
       },
       "additionalProperties": false
@@ -6377,6 +6403,9 @@
                   }
                 }
               ]
+            },
+            "map_capacity": {
+              "$ref": "#/$defs/EBPFMapCapacityOptions"
             },
             "shared_network": {
               "$ref": "#/$defs/EBPFSharedNetworkOptions"

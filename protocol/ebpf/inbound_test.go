@@ -11,6 +11,7 @@ import (
 	"testing"
 	"unsafe"
 
+	ECommon "github.com/sagernet/sing-box/common/ebpf"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/control"
 	"github.com/sagernet/sing/common/json/badoption"
@@ -145,6 +146,51 @@ func TestNormalizeDNSMode(t *testing.T) {
 	}
 	if _, err := normalizeDNSMode("disabled"); err == nil {
 		t.Fatal("expected an unknown DNS mode to be rejected")
+	}
+}
+
+func TestNormalizeMapCapacity(t *testing.T) {
+	capacity, err := normalizeMapCapacity(option.EBPFMapCapacityOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capacity != ECommon.DefaultMapCapacity() {
+		t.Fatalf("unexpected default map capacity: %+v", capacity)
+	}
+	tcpCapacity := option.EBPFMapCapacity(32768)
+	udpCapacity := option.EBPFMapCapacity(131072)
+	socketCapacity := option.EBPFMapCapacity(16384)
+	capacity, err = normalizeMapCapacity(option.EBPFMapCapacityOptions{
+		TCPRedirect:  &tcpCapacity,
+		UDPRedirect:  &udpCapacity,
+		SocketBypass: &socketCapacity,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capacity.TCPRedirect != uint32(tcpCapacity) ||
+		capacity.UDPRedirect != uint32(udpCapacity) ||
+		capacity.SocketBypass != uint32(socketCapacity) {
+		t.Fatalf("unexpected custom map capacity: %+v", capacity)
+	}
+}
+
+func TestNormalizeMapCapacityRejectsExplicitInvalidValues(t *testing.T) {
+	zero := option.EBPFMapCapacity(0)
+	tooLarge := option.EBPFMapCapacity(ECommon.MaxConfigurableMapCapacity + 1)
+	for _, configured := range []*option.EBPFMapCapacity{&zero, &tooLarge} {
+		if _, err := normalizeMapCapacity(option.EBPFMapCapacityOptions{
+			UDPRedirect: configured,
+		}); err == nil {
+			t.Fatalf("expected map capacity %d to be rejected", *configured)
+		}
+		if _, err := normalizeMapCapacityValue(
+			"shared_network.map_capacity",
+			configured,
+			ECommon.SharedNetworkMapCapacity,
+		); err == nil {
+			t.Fatalf("expected shared-network map capacity %d to be rejected", *configured)
+		}
 	}
 }
 

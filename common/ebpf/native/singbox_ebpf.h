@@ -10,11 +10,9 @@
 #include <stdint.h>
 
 #define SB_EBPF_DEFAULT_CGROUP_PATH "/sys/fs/cgroup"
-#define SB_EBPF_MAX_TCP_REDIRECT_MAP_ENTRIES 65536U
-#define SB_EBPF_MAX_UDP_REDIRECT_MAP_ENTRIES 65536U
-#define SB_EBPF_MAX_UDP_PEER_MAP_ENTRIES 65536U
 #define SB_EBPF_MAX_POLICY_MAP_ENTRIES 4096U
 #define SB_EBPF_MAX_BYPASS_CIDR_MAP_ENTRIES 65536U
+#define SB_EBPF_MAX_CONFIGURABLE_MAP_ENTRIES 1048576U
 #define SB_EBPF_ORIGINAL_DST_FLAG_CONNECTED_UDP 1U
 
 #define SB_EBPF_PROTO_TCP 6U
@@ -138,6 +136,9 @@ int sb_ebpf_inbound_prepare(
     uint32_t redirect_ipv6_prefix_bits,
     uint32_t include_uid_entries,
     uint32_t exclude_uid_entries,
+    uint32_t tcp_redirect_map_capacity,
+    uint32_t udp_redirect_map_capacity,
+    uint32_t socket_bypass_map_capacity,
     struct sb_ebpf_inbound_runtime *runtime);
 int sb_ebpf_inbound_attach(struct sb_ebpf_inbound_runtime *runtime);
 int sb_ebpf_inbound_close(struct sb_ebpf_inbound_runtime *runtime);
@@ -153,6 +154,7 @@ int sb_ebpf_shared_network_prepare(
     size_t object_size,
     int bypass_ipv4_map_fd,
     int bypass_ipv6_map_fd,
+    uint32_t map_capacity,
     struct sb_ebpf_shared_network_runtime *runtime);
 int sb_ebpf_shared_network_close(struct sb_ebpf_shared_network_runtime *runtime);
 

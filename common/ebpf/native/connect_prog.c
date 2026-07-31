@@ -2187,11 +2187,20 @@ int sb_ebpf_inbound_prepare(
 	uint32_t redirect_ipv6_prefix_bits,
 	uint32_t include_uid_entries,
 	uint32_t exclude_uid_entries,
+	uint32_t tcp_redirect_map_capacity,
+	uint32_t udp_redirect_map_capacity,
+	uint32_t socket_bypass_map_capacity,
 	struct sb_ebpf_inbound_runtime *runtime) {
     if (runtime == NULL || listen_port == 0U || (!enable_tcp && !enable_udp) ||
         (!enable_ipv4 && !enable_ipv6) ||
         include_uid_entries > SB_EBPF_MAX_POLICY_MAP_ENTRIES ||
         exclude_uid_entries > SB_EBPF_MAX_POLICY_MAP_ENTRIES ||
+        tcp_redirect_map_capacity == 0U ||
+        tcp_redirect_map_capacity > SB_EBPF_MAX_CONFIGURABLE_MAP_ENTRIES ||
+        udp_redirect_map_capacity == 0U ||
+        udp_redirect_map_capacity > SB_EBPF_MAX_CONFIGURABLE_MAP_ENTRIES ||
+        socket_bypass_map_capacity == 0U ||
+        socket_bypass_map_capacity > SB_EBPF_MAX_CONFIGURABLE_MAP_ENTRIES ||
         (enable_ipv4 && (redirect_ipv4 == NULL ||
                          redirect_ipv4_prefix_bits < 8U ||
                          redirect_ipv4_prefix_bits > 10U)) ||
@@ -2217,19 +2226,19 @@ int sb_ebpf_inbound_prepare(
         config.redirect_ipv6_prefix_bits = redirect_ipv6_prefix_bits;
     }
     runtime->tcp_redirect_map_fd = enable_tcp
-        ? create_redirect_map(SB_EBPF_MAX_TCP_REDIRECT_MAP_ENTRIES)
+        ? create_redirect_map(tcp_redirect_map_capacity)
         : -1;
     runtime->udp_redirect_map_fd = enable_udp
-        ? create_redirect_map(SB_EBPF_MAX_UDP_REDIRECT_MAP_ENTRIES)
+        ? create_redirect_map(udp_redirect_map_capacity)
         : -1;
     runtime->udp_token_map_fd = enable_udp
-        ? create_udp_token_map(SB_EBPF_MAX_UDP_REDIRECT_MAP_ENTRIES)
+        ? create_udp_token_map(udp_redirect_map_capacity)
         : -1;
     runtime->udp_peer_map_fd = enable_udp
-        ? create_udp_peer_map(SB_EBPF_MAX_UDP_PEER_MAP_ENTRIES)
+        ? create_udp_peer_map(udp_redirect_map_capacity)
         : -1;
     runtime->bypass_socket_cookie_map_fd = create_bypass_socket_cookie_map(
-        SB_EBPF_MAX_TCP_REDIRECT_MAP_ENTRIES);
+        socket_bypass_map_capacity);
     runtime->include_uid_map_fd = create_uid_policy_map(include_uid_entries);
     runtime->exclude_uid_map_fd = create_uid_policy_map(exclude_uid_entries);
     runtime->bypass_ipv4_cidr_map_fd = create_bypass_cidr_map(
