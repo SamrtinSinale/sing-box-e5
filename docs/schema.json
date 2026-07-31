@@ -6270,6 +6270,81 @@
                   }
                 }
               ]
+            },
+            "bypass_rule_set": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "x-tag-reference": "rule_set"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "x-tag-reference": "rule_set"
+                  }
+                }
+              ]
+            },
+            "include_uid": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4294967295
+                  }
+                }
+              ]
+            },
+            "include_uid_range": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            "exclude_uid": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4294967295
+                  }
+                }
+              ]
+            },
+            "exclude_uid_range": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
             }
           },
           "required": [

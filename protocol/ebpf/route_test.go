@@ -48,3 +48,26 @@ func TestRoutePrefixContains(t *testing.T) {
 		}
 	}
 }
+
+func TestPrefixesOverlap(t *testing.T) {
+	tests := []struct {
+		left    string
+		right   string
+		overlap bool
+	}{
+		{"127.128.0.0/9", "127.128.0.0/10", true},
+		{"127.128.0.0/9", "127.0.0.0/8", true},
+		{"127.128.0.0/9", "127.0.0.0/9", false},
+		{"fd53:696e:672d:626f::/64", "fd53:696e:672d:626f::1/128", true},
+		{"fd53:696e:672d:626f::/64", "fd00::/64", false},
+		{"127.128.0.0/9", "fd53:696e:672d:626f::/64", false},
+	}
+	for _, test := range tests {
+		left := netip.MustParsePrefix(test.left)
+		right := netip.MustParsePrefix(test.right)
+		if overlap := prefixesOverlap(left, right); overlap != test.overlap {
+			t.Errorf("unexpected overlap for %s and %s: got %v, want %v",
+				test.left, test.right, overlap, test.overlap)
+		}
+	}
+}

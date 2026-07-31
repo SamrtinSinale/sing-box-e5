@@ -28,6 +28,22 @@ func (b *Backend) Close() error {
 	return nil
 }
 
+func (b *Backend) IsClosed() bool {
+	return true
+}
+
+func (b *Backend) UpdateBypassCIDR([]netip.Prefix) (bool, error) {
+	return false, unsupportedArchitectureError()
+}
+
+func (b *Backend) BypassCIDRCount() (int, int) {
+	return 0, 0
+}
+
+func (b *Backend) RuntimeStats() (RuntimeStats, error) {
+	return RuntimeStats{}, unsupportedArchitectureError()
+}
+
 func (b *Backend) CgroupPath() string {
 	return ""
 }
@@ -42,4 +58,12 @@ func (b *Backend) ProtectFunc() control.Func {
 
 func (b *Backend) LookupOriginal(uint8, netip.AddrPort) (OriginalDestination, error) {
 	return OriginalDestination{}, unsupportedArchitectureError()
+}
+
+func (b *Backend) TakeOriginal(uint8, netip.AddrPort) (OriginalDestination, error) {
+	return OriginalDestination{}, unsupportedArchitectureError()
+}
+
+func (b *Backend) DeleteRedirect(uint8, netip.AddrPort) error {
+	return unsupportedArchitectureError()
 }

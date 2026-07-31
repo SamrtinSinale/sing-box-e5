@@ -7,12 +7,23 @@ import (
 )
 
 const (
-	ProtocolTCP = 6
-	ProtocolUDP = 17
+	ProtocolTCP            = 6
+	ProtocolUDP            = 17
+	TCPRedirectMapCapacity = 65536
+	UDPRedirectMapCapacity = 65536
 
 	addressFamilyIPv4 = 2
 	addressFamilyIPv6 = 10
 )
+
+type RuntimeStats struct {
+	TCPRedirectEntries uint64
+	UDPRedirectEntries uint64
+	TokenCollisions    uint64
+	MapUpdateFailures  uint64
+	RedirectDrops      uint64
+	LookupMisses       uint64
+}
 
 type OriginalDestination struct {
 	Destination  netip.AddrPort
@@ -24,37 +35,24 @@ type redirectKey struct {
 	Protocol     uint8
 	RedirectPort uint16
 	RedirectAddr [16]byte
-	ClientPort   uint16
-	Reserved     uint16
-	ClientAddr   [16]byte
 }
 
 type originalDestination struct {
-	Family   uint8
-	Protocol uint8
-	Port     uint16
-	Addr     [16]byte
-	Flags    uint8
-	Reserved [3]byte
+	Family       uint8
+	Protocol     uint8
+	Port         uint16
+	Addr         [16]byte
+	Flags        uint8
+	Reserved     [3]byte
+	SocketCookie uint64
 }
 
-func makeRedirectKey(protocol uint8, redirect netip.AddrPort, client netip.AddrPort) (redirectKey, error) {
+func makeRedirectKey(protocol uint8, redirect netip.AddrPort) (redirectKey, error) {
 	var key redirectKey
 	key.Protocol = protocol
 	key.RedirectPort = redirect.Port()
-	key.ClientPort = client.Port()
 	if err := putAddress(&key.Family, &key.RedirectAddr, redirect.Addr()); err != nil {
 		return redirectKey{}, E.Cause(err, "invalid redirect address")
-	}
-	if client.IsValid() {
-		clientAddress := client.Addr().Unmap()
-		if clientAddress.Is4() {
-			address := clientAddress.As4()
-			copy(key.ClientAddr[:4], address[:])
-		} else if clientAddress.Is6() {
-			address := clientAddress.As16()
-			copy(key.ClientAddr[:], address[:])
-		}
 	}
 	return key, nil
 }

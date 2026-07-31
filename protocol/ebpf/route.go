@@ -8,7 +8,6 @@ import (
 	"net/netip"
 
 	"github.com/sagernet/netlink"
-	"github.com/sagernet/sing-box/common/listener"
 	E "github.com/sagernet/sing/common/exceptions"
 
 	"golang.org/x/sys/unix"
@@ -26,9 +25,7 @@ func (i *Inbound) setupLocalRoutes() error {
 	if i.redirectIPv6.IsValid() {
 		prefixes = append(prefixes, i.redirectIPv6)
 	}
-	routes, err := listener.ListenNetworkNamespace(i.ctx, i.listenOptions.NetNs, func() ([]*localRoute, error) {
-		return addLocalRoutes(prefixes)
-	})
+	routes, err := addLocalRoutes(prefixes)
 	if err != nil {
 		return err
 	}
@@ -41,20 +38,17 @@ func (i *Inbound) removeLocalRoutes() error {
 		return nil
 	}
 	routes := i.localRoutes
-	_, err := listener.ListenNetworkNamespace(i.ctx, i.listenOptions.NetNs, func() (struct{}, error) {
-		var routeErr error
-		for index := len(routes) - 1; index >= 0; index-- {
-			err := netlink.RouteDel(&routes[index].route)
-			if err != nil && !errors.Is(err, unix.ENOENT) && !errors.Is(err, unix.ESRCH) {
-				routeErr = E.Errors(routeErr, err)
-			}
+	var routeErr error
+	for index := len(routes) - 1; index >= 0; index-- {
+		err := netlink.RouteDel(&routes[index].route)
+		if err != nil && !errors.Is(err, unix.ENOENT) && !errors.Is(err, unix.ESRCH) {
+			routeErr = E.Errors(routeErr, err)
 		}
-		return struct{}{}, routeErr
-	})
-	if err == nil {
+	}
+	if routeErr == nil {
 		i.localRoutes = nil
 	}
-	return err
+	return routeErr
 }
 
 func addLocalRoutes(prefixes []netip.Prefix) ([]*localRoute, error) {
@@ -91,6 +85,9 @@ func addLocalRoute(loopbackIndex int, prefix netip.Prefix) (netlink.Route, bool,
 		Table:     unix.RT_TABLE_LOCAL,
 		Type:      unix.RTN_LOCAL,
 	}
+	if err := checkRedirectRouteConflict(loopbackIndex, family, prefix); err != nil {
+		return netlink.Route{}, false, err
+	}
 	exists, err := localRouteExists(family, prefix)
 	if err != nil {
 		return netlink.Route{}, false, err
@@ -108,6 +105,45 @@ func addLocalRoute(loopbackIndex int, prefix netip.Prefix) (netlink.Route, bool,
 		return netlink.Route{}, false, E.Cause(err, "add local route for ", prefix)
 	}
 	return route, true, nil
+}
+
+func checkRedirectRouteConflict(loopbackIndex int, family int, prefix netip.Prefix) error {
+	addresses, err := netlink.AddrList(nil, family)
+	if err != nil {
+		return E.Cause(err, "list interface addresses for eBPF redirect route")
+	}
+	for _, address := range addresses {
+		if address.LinkIndex == loopbackIndex && prefix.Addr().Is4() {
+			continue
+		}
+		addressPrefix, loaded := prefixFromIPNet(address.IPNet)
+		if loaded && prefixesOverlap(prefix, addressPrefix) {
+			return E.New("eBPF redirect address ", prefix,
+				" conflicts with interface address ", addressPrefix)
+		}
+	}
+	routes, err := netlink.RouteList(nil, family)
+	if err != nil {
+		return E.Cause(err, "list routes for eBPF redirect address")
+	}
+	minimumRouteBits := 8
+	if prefix.Addr().Is6() {
+		minimumRouteBits = 7
+	}
+	for _, route := range routes {
+		if route.LinkIndex == loopbackIndex && prefix.Addr().Is4() {
+			continue
+		}
+		routePrefix, loaded := prefixFromIPNet(route.Dst)
+		if !loaded || routePrefix.Bits() < minimumRouteBits {
+			continue
+		}
+		if prefixesOverlap(prefix, routePrefix) {
+			return E.New("eBPF redirect address ", prefix,
+				" conflicts with route ", routePrefix)
+		}
+	}
+	return nil
 }
 
 func localRouteExists(family int, prefix netip.Prefix) (bool, error) {
@@ -136,18 +172,38 @@ func prefixIPNet(prefix netip.Prefix) *net.IPNet {
 }
 
 func routePrefixContains(destination *net.IPNet, prefix netip.Prefix) bool {
-	if destination == nil {
-		return false
-	}
-	bits, addressBits := destination.Mask.Size()
-	address, loaded := netip.AddrFromSlice(destination.IP)
+	destinationPrefix, loaded := prefixFromIPNet(destination)
 	if !loaded {
 		return false
 	}
-	address = address.Unmap()
 	prefix = prefix.Masked()
-	if bits < 0 || address.BitLen() != addressBits || address.BitLen() != prefix.Addr().BitLen() || bits > prefix.Bits() {
+	if destinationPrefix.Addr().BitLen() != prefix.Addr().BitLen() || destinationPrefix.Bits() > prefix.Bits() {
 		return false
 	}
-	return netip.PrefixFrom(address, bits).Masked().Contains(prefix.Addr())
+	return destinationPrefix.Contains(prefix.Addr())
+}
+
+func prefixFromIPNet(network *net.IPNet) (netip.Prefix, bool) {
+	if network == nil {
+		return netip.Prefix{}, false
+	}
+	bits, addressBits := network.Mask.Size()
+	address, loaded := netip.AddrFromSlice(network.IP)
+	if !loaded || bits < 0 {
+		return netip.Prefix{}, false
+	}
+	address = address.Unmap()
+	if address.BitLen() != addressBits {
+		return netip.Prefix{}, false
+	}
+	return netip.PrefixFrom(address, bits).Masked(), true
+}
+
+func prefixesOverlap(left netip.Prefix, right netip.Prefix) bool {
+	left = left.Masked()
+	right = right.Masked()
+	if left.Addr().BitLen() != right.Addr().BitLen() {
+		return false
+	}
+	return left.Contains(right.Addr()) || right.Contains(left.Addr())
 }

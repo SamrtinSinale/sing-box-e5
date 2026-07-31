@@ -62,6 +62,30 @@ func TestNormalizeListenOptionsRejectsProxyProtocol(t *testing.T) {
 	}
 }
 
+func TestNormalizeListenOptionsRejectsNetworkNamespace(t *testing.T) {
+	_, err := normalizeListenOptions(option.ListenOptions{NetNs: "test-netns"})
+	if err == nil {
+		t.Fatal("expected netns to be rejected")
+	}
+}
+
+func TestNormalizeListenOptionsAllowsLoopbackBindInterface(t *testing.T) {
+	options, err := normalizeListenOptions(option.ListenOptions{BindInterface: "lo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.BindInterface != "lo" {
+		t.Fatalf("unexpected bind interface: %s", options.BindInterface)
+	}
+}
+
+func TestNormalizeListenOptionsRejectsNonLoopbackBindInterface(t *testing.T) {
+	_, err := normalizeListenOptions(option.ListenOptions{BindInterface: "wlan0"})
+	if err == nil {
+		t.Fatal("expected a non-loopback bind_interface to be rejected")
+	}
+}
+
 func TestNormalizeRedirectAddresses(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -75,8 +99,8 @@ func TestNormalizeRedirectAddresses(t *testing.T) {
 		},
 		{
 			name:      "ipv4 only",
-			addresses: []netip.Prefix{netip.MustParsePrefix("10.42.0.1/9")},
-			ipv4:      "10.0.0.0/9",
+			addresses: []netip.Prefix{netip.MustParsePrefix("127.42.0.1/9")},
+			ipv4:      "127.0.0.0/9",
 		},
 		{
 			name:      "ipv6 only",
@@ -118,6 +142,10 @@ func TestNormalizeRedirectAddressesRejectsInvalid(t *testing.T) {
 		},
 		{netip.MustParsePrefix("127.0.0.0/7")},
 		{netip.MustParsePrefix("127.0.0.0/11")},
+		{netip.MustParsePrefix("10.0.0.0/8")},
+		{netip.MustParsePrefix("1.0.0.0/8")},
+		{netip.MustParsePrefix("2001:db8::/64")},
+		{netip.MustParsePrefix("fe80::/64")},
 		{netip.MustParsePrefix("fd53:696e:672d:626f::/96")},
 		{netip.MustParsePrefix("0.0.0.0/8")},
 		{netip.MustParsePrefix("ff00::/64")},

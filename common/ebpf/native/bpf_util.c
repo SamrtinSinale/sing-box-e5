@@ -394,9 +394,14 @@ int sb_ebpf_detach_owned_progs(int cgroup_fd) {
         BPF_CGROUP_INET6_CONNECT,
         BPF_CGROUP_UDP6_SENDMSG,
         BPF_CGROUP_UDP6_RECVMSG,
+        BPF_CGROUP_INET_SOCK_RELEASE,
     };
     for (size_t i = 0; i < sizeof(attach_types) / sizeof(attach_types[0]); ++i) {
         if (sb_ebpf_detach_named_for_type(cgroup_fd, attach_types[i]) != 0) {
+            if (attach_types[i] == BPF_CGROUP_INET_SOCK_RELEASE &&
+                (errno == EINVAL || errno == ENOTSUP || errno == EOPNOTSUPP)) {
+                continue;
+            }
             return -1;
         }
     }

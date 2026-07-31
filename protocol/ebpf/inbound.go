@@ -27,6 +27,7 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	udpnat "github.com/sagernet/sing/common/udpnat2"
+	"github.com/sagernet/sing/common/x/list"
 	"github.com/sagernet/sing/service"
 
 	"golang.org/x/net/ipv4"
@@ -61,15 +62,17 @@ type Inbound struct {
 	redirectIPv6      netip.Prefix
 	policy            ECommon.Policy
 	localRoutes       []*localRoute
+	backendAccess     sync.RWMutex
+	closeAccess       sync.Mutex
+	statsCancel       context.CancelFunc
+	statsDone         chan struct{}
 
-	bindingAccess sync.RWMutex
-	bindings      map[udpBindingKey]netip.Addr
-	connectedUDP  map[netip.AddrPort]bool
-}
+	bypassRuleSetAccess    sync.Mutex
+	bypassRuleSet          []adapter.RuleSet
+	bypassRuleSetCallbacks []*list.Element[adapter.RuleSetUpdateCallback]
+	bypassRuleSetStarted   bool
 
-type udpBindingKey struct {
-	client      netip.AddrPort
-	destination netip.AddrPort
+	udpClients udpClientTable
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.EBPFInboundOptions) (adapter.Inbound, error) {
@@ -103,8 +106,6 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		logger:         logger,
 		networkManager: networkManager,
 		listenOptions:  listenOptions,
-		bindings:       make(map[udpBindingKey]netip.Addr),
-		connectedUDP:   make(map[netip.AddrPort]bool),
 		listenPort:     listenOptions.ListenPort,
 		enableTCP:      enableTCP,
 		enableUDP:      enableUDP,
@@ -114,6 +115,13 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 			IncludeUID: includeUID,
 			ExcludeUID: excludeUID,
 		},
+	}
+	for _, ruleSetTag := range options.BypassRuleSet {
+		ruleSet, loaded := router.RuleSet(ruleSetTag)
+		if !loaded {
+			return nil, E.New("parse bypass_rule_set: rule-set not found: ", ruleSetTag)
+		}
+		inbound.bypassRuleSet = append(inbound.bypassRuleSet, ruleSet)
 	}
 	udpTimeout := C.UDPTimeout
 	if listenOptions.UDPTimeout != 0 {
@@ -149,6 +157,12 @@ func (i *Inbound) newListener(network []string, ipv6 bool) *listener.Listener {
 }
 
 func normalizeListenOptions(options option.ListenOptions) (option.ListenOptions, error) {
+	if options.NetNs != "" {
+		return option.ListenOptions{}, E.New("netns is not supported by eBPF inbound")
+	}
+	if options.BindInterface != "" && options.BindInterface != "lo" {
+		return option.ListenOptions{}, E.New("eBPF inbound bind_interface must be lo")
+	}
 	if options.Listen != nil {
 		listenAddress := netip.Addr(*options.Listen)
 		if !listenAddress.IsValid() || !listenAddress.IsUnspecified() {
@@ -176,27 +190,18 @@ func normalizeRedirectAddresses(addresses []netip.Prefix) (netip.Prefix, netip.P
 			return netip.Prefix{}, netip.Prefix{}, E.New("invalid eBPF redirect address")
 		}
 		address = address.Masked()
+		if err := ECommon.ValidateRedirectPrefix(address); err != nil {
+			return netip.Prefix{}, netip.Prefix{}, err
+		}
 		switch {
 		case address.Addr().Is4():
 			if ipv4Prefix.IsValid() {
 				return netip.Prefix{}, netip.Prefix{}, E.New("duplicate IPv4 eBPF redirect address")
 			}
-			if address.Bits() < 8 || address.Bits() > 10 {
-				return netip.Prefix{}, netip.Prefix{}, E.New("IPv4 eBPF redirect address must use a prefix between /8 and /10")
-			}
-			if address.Addr().IsUnspecified() || address.Addr().IsMulticast() {
-				return netip.Prefix{}, netip.Prefix{}, E.New("invalid IPv4 eBPF redirect address: ", address)
-			}
 			ipv4Prefix = address
 		case address.Addr().Is6() && !address.Addr().Is4In6():
 			if ipv6Prefix.IsValid() {
 				return netip.Prefix{}, netip.Prefix{}, E.New("duplicate IPv6 eBPF redirect address")
-			}
-			if address.Bits() != 64 {
-				return netip.Prefix{}, netip.Prefix{}, E.New("IPv6 eBPF redirect address must use a /64 prefix")
-			}
-			if address.Addr().IsUnspecified() || address.Addr().IsMulticast() {
-				return netip.Prefix{}, netip.Prefix{}, E.New("invalid IPv6 eBPF redirect address: ", address)
 			}
 			ipv6Prefix = address
 		default:
@@ -241,51 +246,78 @@ func parseUIDRanges(uidList []uint32, rangeList []string) ([]ECommon.UIDRange, e
 func (i *Inbound) Start(stage adapter.StartStage) error {
 	switch stage {
 	case adapter.StartStateInitialize:
+		policy := i.policy
+		policy.EnableBypassCIDR = len(i.bypassRuleSet) > 0
 		backend, err := ECommon.Prepare("", i.listenPort,
-			i.enableTCP, i.enableUDP, i.redirectIPv4, i.redirectIPv6, i.policy)
+			i.enableTCP, i.enableUDP, i.redirectIPv4, i.redirectIPv6, policy)
 		if err != nil {
 			return err
 		}
-		i.backend = backend
+		i.setBackend(backend)
 		if err = i.networkManager.RegisterSocketProtectFunc(backend.ProtectFunc()); err != nil {
-			_ = backend.Close()
-			i.backend = nil
-			return err
+			closeErr := backend.Close()
+			if backend.IsClosed() {
+				i.setBackend(nil)
+			}
+			return E.Errors(err, E.Cause(closeErr, "close eBPF backend"))
 		}
 		i.protectRegistered = true
 	case adapter.StartStateStart:
-		if i.backend == nil {
+		backend := i.backendInstance()
+		if backend == nil {
 			return E.New("eBPF backend is not initialized")
 		}
+		if err := i.startBypassRuleSets(); err != nil {
+			return E.Errors(
+				E.Cause(err, "initialize eBPF bypass_rule_set"),
+				E.Cause(i.cleanupStartFailure(), "cleanup eBPF inbound"),
+			)
+		}
 		if err := i.setupLocalRoutes(); err != nil {
-			i.cleanupStartFailure()
-			return E.Cause(err, "configure eBPF redirect routes")
+			return E.Errors(
+				E.Cause(err, "configure eBPF redirect routes"),
+				E.Cause(i.cleanupStartFailure(), "cleanup eBPF inbound"),
+			)
 		}
 		if err := i.startListeners(); err != nil {
-			i.cleanupStartFailure()
-			return err
+			return E.Errors(err, E.Cause(i.cleanupStartFailure(), "cleanup eBPF inbound"))
 		}
-		if err := i.backend.Attach(); err != nil {
-			i.cleanupStartFailure()
-			return err
+		if err := backend.Attach(); err != nil {
+			return E.Errors(err, E.Cause(i.cleanupStartFailure(), "cleanup eBPF inbound"))
 		}
+		i.startRuntimeStatsMonitor(backend)
+		bypassIPv4Count, bypassIPv6Count := backend.BypassCIDRCount()
 		i.logger.Info(
-			"eBPF inbound attached: cgroup=", i.backend.CgroupPath(),
+			"eBPF inbound attached: cgroup=", backend.CgroupPath(),
 			", redirect_address=[", strings.Join(i.redirectAddressStrings(), ", "), "]",
-			", programs=[", strings.Join(i.backend.AttachedPrograms(), ", "), "]",
+			", bypass_cidr={ipv4:", bypassIPv4Count, ", ipv6:", bypassIPv6Count, "}",
+			", redirect_map_capacity={tcp:", ECommon.TCPRedirectMapCapacity,
+			", udp:", ECommon.UDPRedirectMapCapacity, "}",
+			", programs=[", strings.Join(backend.AttachedPrograms(), ", "), "]",
 		)
 	}
 	return nil
 }
 
 func (i *Inbound) Close() error {
-	i.unregisterSocketProtector()
-	var backendErr error
-	if i.backend != nil {
-		backendErr = i.backend.Close()
-		i.backend = nil
-	}
+	i.closeAccess.Lock()
+	defer i.closeAccess.Unlock()
+	i.stopRuntimeStatsMonitor()
 	i.udpNat.Purge()
+	i.stopBypassRuleSets()
+	backend := i.backendInstance()
+	var backendErr error
+	if backend != nil {
+		backendErr = backend.Close()
+		if !backend.IsClosed() {
+			if backendErr == nil {
+				backendErr = E.New("eBPF backend remained open after close")
+			}
+			return backendErr
+		}
+		i.setBackend(nil)
+	}
+	i.unregisterSocketProtector()
 	return E.Errors(backendErr, i.closeListeners(), i.removeLocalRoutes())
 }
 
@@ -315,14 +347,36 @@ func (i *Inbound) closeListeners() error {
 	return E.Errors(listener4Err, listener6Err)
 }
 
-func (i *Inbound) cleanupStartFailure() {
-	_ = i.closeListeners()
-	_ = i.removeLocalRoutes()
-	i.unregisterSocketProtector()
-	if i.backend != nil {
-		_ = i.backend.Close()
-		i.backend = nil
+func (i *Inbound) cleanupStartFailure() error {
+	i.stopRuntimeStatsMonitor()
+	i.udpNat.Purge()
+	i.stopBypassRuleSets()
+	backend := i.backendInstance()
+	var backendErr error
+	if backend != nil {
+		backendErr = backend.Close()
+		if !backend.IsClosed() {
+			if backendErr == nil {
+				backendErr = E.New("eBPF backend remained open after close")
+			}
+			return backendErr
+		}
+		i.setBackend(nil)
 	}
+	i.unregisterSocketProtector()
+	return E.Errors(backendErr, i.closeListeners(), i.removeLocalRoutes())
+}
+
+func (i *Inbound) backendInstance() *ECommon.Backend {
+	i.backendAccess.RLock()
+	defer i.backendAccess.RUnlock()
+	return i.backend
+}
+
+func (i *Inbound) setBackend(backend *ECommon.Backend) {
+	i.backendAccess.Lock()
+	i.backend = backend
+	i.backendAccess.Unlock()
 }
 
 func (i *Inbound) redirectAddressStrings() []string {
@@ -344,16 +398,112 @@ func (i *Inbound) unregisterSocketProtector() {
 	i.protectRegistered = false
 }
 
+func (i *Inbound) startBypassRuleSets() error {
+	if len(i.bypassRuleSet) == 0 {
+		return nil
+	}
+	i.bypassRuleSetAccess.Lock()
+	defer i.bypassRuleSetAccess.Unlock()
+	if i.bypassRuleSetStarted {
+		return nil
+	}
+	i.bypassRuleSetCallbacks = make([]*list.Element[adapter.RuleSetUpdateCallback], 0, len(i.bypassRuleSet))
+	for _, ruleSet := range i.bypassRuleSet {
+		ruleSet.IncRef()
+		i.bypassRuleSetCallbacks = append(
+			i.bypassRuleSetCallbacks,
+			ruleSet.RegisterCallback(i.updateBypassRuleSet),
+		)
+	}
+	i.bypassRuleSetStarted = true
+	updated, err := i.refreshBypassRuleSetsLocked(true)
+	if err != nil {
+		i.stopBypassRuleSetsLocked()
+		return err
+	}
+	if updated {
+		i.logBypassRuleSetUpdate()
+	}
+	return nil
+}
+
+func (i *Inbound) stopBypassRuleSets() {
+	i.bypassRuleSetAccess.Lock()
+	defer i.bypassRuleSetAccess.Unlock()
+	i.stopBypassRuleSetsLocked()
+}
+
+func (i *Inbound) stopBypassRuleSetsLocked() {
+	if !i.bypassRuleSetStarted {
+		return
+	}
+	for ruleSetIndex, ruleSet := range i.bypassRuleSet {
+		if ruleSetIndex < len(i.bypassRuleSetCallbacks) {
+			ruleSet.UnregisterCallback(i.bypassRuleSetCallbacks[ruleSetIndex])
+		}
+		ruleSet.DecRef()
+	}
+	i.bypassRuleSetCallbacks = nil
+	i.bypassRuleSetStarted = false
+}
+
+func (i *Inbound) updateBypassRuleSet(adapter.RuleSet) {
+	i.bypassRuleSetAccess.Lock()
+	defer i.bypassRuleSetAccess.Unlock()
+	if !i.bypassRuleSetStarted {
+		return
+	}
+	updated, err := i.refreshBypassRuleSetsLocked(false)
+	if err != nil {
+		backend := i.backendInstance()
+		if backend != nil && !backend.IsClosed() {
+			i.logger.Error("refresh eBPF bypass_rule_set: ", err)
+		}
+		return
+	}
+	if updated {
+		i.logBypassRuleSetUpdate()
+	}
+}
+
+func (i *Inbound) refreshBypassRuleSetsLocked(warnEmpty bool) (bool, error) {
+	var prefixes []netip.Prefix
+	for _, ruleSet := range i.bypassRuleSet {
+		ipSets := ruleSet.ExtractIPSet()
+		if warnEmpty && len(ipSets) == 0 {
+			i.logger.Warn("bypass_rule_set: no destination IP CIDR rules found in rule-set: ", ruleSet.Name())
+		}
+		for _, ipSet := range ipSets {
+			prefixes = append(prefixes, ipSet.Prefixes()...)
+		}
+	}
+	backend := i.backendInstance()
+	if backend == nil {
+		return false, E.New("eBPF backend is not initialized")
+	}
+	return backend.UpdateBypassCIDR(prefixes)
+}
+
+func (i *Inbound) logBypassRuleSetUpdate() {
+	backend := i.backendInstance()
+	if backend == nil {
+		return
+	}
+	ipv4Count, ipv6Count := backend.BypassCIDRCount()
+	i.logger.Debug("refreshed eBPF bypass CIDR policy: ipv4=", ipv4Count, ", ipv6=", ipv6Count)
+}
+
 func (i *Inbound) InterfaceUpdated() {
 	i.udpNat.Purge()
 }
 
 func (i *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
-	if i.backend == nil {
+	backend := i.backendInstance()
+	if backend == nil {
 		conn.Close()
 		return
 	}
-	original, err := i.backend.LookupOriginal(
+	original, err := backend.TakeOriginal(
 		ECommon.ProtocolTCP,
 		M.SocksaddrFromNet(conn.LocalAddr()).AddrPort(),
 	)
@@ -370,7 +520,8 @@ func (i *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata ada
 }
 
 func (i *Inbound) NewPacket(buffer *buf.Buffer, oob []byte, source M.Socksaddr) {
-	if i.backend == nil {
+	backend := i.backendInstance()
+	if backend == nil {
 		return
 	}
 	redirectAddress, err := redirectAddressFromOOB(oob)
@@ -380,14 +531,18 @@ func (i *Inbound) NewPacket(buffer *buf.Buffer, oob []byte, source M.Socksaddr) 
 	}
 	client := source.AddrPort()
 	redirectDestination := netip.AddrPortFrom(redirectAddress, i.listenPort)
-	original, err := i.backend.LookupOriginal(ECommon.ProtocolUDP, redirectDestination)
+	original, err := backend.LookupOriginal(ECommon.ProtocolUDP, redirectDestination)
 	if err != nil {
 		i.logger.Warn("lookup UDP original destination: ", err)
 		return
 	}
-	i.bindingAccess.Lock()
-	i.bindings[udpBindingKey{client: client, destination: original.Destination}] = redirectAddress
-	i.bindingAccess.Unlock()
+	releasedRedirects := i.udpClients.setBinding(
+		client,
+		original.Destination,
+		redirectAddress,
+		original.ConnectedUDP,
+	)
+	i.deleteUDPRedirects(releasedRedirects)
 	i.udpNat.NewPacket([][]byte{buffer.Bytes()}, source, M.SocksaddrFromNetIP(original.Destination), original.ConnectedUDP)
 }
 
@@ -400,9 +555,9 @@ func (i *Inbound) NewPacketConnectionEx(ctx context.Context, conn N.PacketConn, 
 	}
 	//nolint:staticcheck
 	metadata.InboundDetour = i.listenOptions.Detour
-	i.bindingAccess.RLock()
-	metadata.UDPConnect = i.connectedUDP[source.AddrPort()]
-	i.bindingAccess.RUnlock()
+	if clientState, loaded := i.udpClients.load(source.AddrPort()); loaded {
+		metadata.UDPConnect = clientState.isConnected()
+	}
 	i.logger.InfoContext(ctx, "inbound packet connection from ", source)
 	i.logger.InfoContext(ctx, "inbound packet connection to ", destination)
 	i.router.RoutePacketConnectionEx(ctx, conn, metadata, onClose)
@@ -412,15 +567,31 @@ func (i *Inbound) preparePacketConnection(source M.Socksaddr, destination M.Sock
 	connectedUDP, _ := userData.(bool)
 	ctx := log.ContextWithNewID(i.ctx)
 	client := source.AddrPort()
-	i.bindingAccess.Lock()
-	i.connectedUDP[client] = connectedUDP
-	i.bindingAccess.Unlock()
+	clientState := i.udpClients.loadOrCreate(client)
+	clientState.setConnected(connectedUDP)
 	writer := &udpPacketWriter{
-		inbound: i,
-		client:  client,
+		inbound:     i,
+		client:      client,
+		clientState: clientState,
 	}
 	return true, ctx, writer, func(error) {
-		i.deleteBindings(writer.client)
+		i.deleteUDPRedirects(i.udpClients.delete(writer.client, writer.clientState))
+	}
+}
+
+func (i *Inbound) deleteUDPRedirects(redirectAddresses []netip.Addr) {
+	if len(redirectAddresses) == 0 {
+		return
+	}
+	backend := i.backendInstance()
+	if backend == nil {
+		return
+	}
+	for _, redirectAddress := range redirectAddresses {
+		redirect := netip.AddrPortFrom(redirectAddress, i.listenPort)
+		if err := backend.DeleteRedirect(ECommon.ProtocolUDP, redirect); err != nil {
+			i.logger.Warn("delete UDP redirect mapping for ", redirect, ": ", err)
+		}
 	}
 }
 
@@ -448,32 +619,15 @@ func (i *Inbound) socketControl(ipv6Listener bool) control.Func {
 	}
 }
 
-func (i *Inbound) redirectAddressFor(client netip.AddrPort, destination netip.AddrPort) (netip.Addr, bool) {
-	i.bindingAccess.RLock()
-	redirectAddress, loaded := i.bindings[udpBindingKey{client: client, destination: destination}]
-	i.bindingAccess.RUnlock()
-	return redirectAddress, loaded
-}
-
-func (i *Inbound) deleteBindings(client netip.AddrPort) {
-	i.bindingAccess.Lock()
-	for key := range i.bindings {
-		if key.client == client {
-			delete(i.bindings, key)
-		}
-	}
-	delete(i.connectedUDP, client)
-	i.bindingAccess.Unlock()
-}
-
 type udpPacketWriter struct {
-	inbound *Inbound
-	client  netip.AddrPort
+	inbound     *Inbound
+	client      netip.AddrPort
+	clientState *udpClientState
 }
 
 func (w *udpPacketWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
 	defer buffer.Release()
-	redirectAddress, loaded := w.inbound.redirectAddressFor(w.client, destination.AddrPort())
+	redirectAddress, loaded := w.clientState.redirectAddress(destination.AddrPort())
 	if !loaded {
 		return E.New("missing UDP redirect binding for ", destination)
 	}

@@ -65,6 +65,9 @@ func TestEBPFInboundRedirectAddresses(t *testing.T) {
 		"redirect_address": [
 			"127.128.0.0/9",
 			"fd53:696e:672d:626f::/64"
+		],
+		"bypass_rule_set": [
+			"geoip-cn"
 		]
 	}`), &inboundOptions); err != nil {
 		t.Fatal(err)
@@ -79,5 +82,8 @@ func TestEBPFInboundRedirectAddresses(t *testing.T) {
 	if ebpfOptions.RedirectAddress[0] != netip.MustParsePrefix("127.128.0.0/9") ||
 		ebpfOptions.RedirectAddress[1] != netip.MustParsePrefix("fd53:696e:672d:626f::/64") {
 		t.Fatalf("unexpected redirect addresses: %v", ebpfOptions.RedirectAddress)
+	}
+	if len(ebpfOptions.BypassRuleSet) != 1 || ebpfOptions.BypassRuleSet[0] != "geoip-cn" {
+		t.Fatalf("unexpected bypass rule-set: %v", ebpfOptions.BypassRuleSet)
 	}
 }
