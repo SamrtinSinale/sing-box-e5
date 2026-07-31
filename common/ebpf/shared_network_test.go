@@ -15,8 +15,42 @@ func TestSharedNetworkABI(t *testing.T) {
 	if size := unsafe.Sizeof(sharedNetworkRedirectKey{}); size != 40 {
 		t.Fatalf("unexpected shared-network redirect key size: %d", size)
 	}
+	if size := unsafe.Sizeof(sharedNetworkOriginalKey{}); size != 44 {
+		t.Fatalf("unexpected shared-network original key size: %d", size)
+	}
+	if size := unsafe.Sizeof(sharedNetworkReverseKey{}); size != 44 {
+		t.Fatalf("unexpected shared-network reverse key size: %d", size)
+	}
+	if size := unsafe.Sizeof(sharedNetworkRedirectValue{}); size != 28 {
+		t.Fatalf("unexpected shared-network redirect value size: %d", size)
+	}
 	if sharedNetworkFlagDNSHijack != 1<<4 {
 		t.Fatalf("unexpected shared-network DNS flag: %#x", sharedNetworkFlagDNSHijack)
+	}
+}
+
+func TestMakeSharedNetworkFlow(t *testing.T) {
+	client := netip.MustParseAddrPort("192.168.43.10:53000")
+	redirect := netip.MustParseAddrPort("127.200.1.2:65531")
+	key, err := makeSharedNetworkRedirectKey(ProtocolUDP, client, redirect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := netip.MustParseAddrPort("1.1.1.1:53")
+	value := sharedNetworkRedirectValue{
+		Family:         addressFamilyIPv4,
+		Protocol:       ProtocolUDP,
+		Port:           original.Port(),
+		InterfaceIndex: 42,
+	}
+	copy(value.Addr[:], original.Addr().AsSlice())
+	flow := makeSharedNetworkFlow(key, value)
+	if flow.originalKey.InterfaceIndex != 42 ||
+		flow.originalKey.OriginalPort != original.Port() ||
+		flow.reverseKey.InterfaceIndex != 42 ||
+		flow.reverseKey.TokenPort != redirect.Port() ||
+		flow.redirectKey != key {
+		t.Fatalf("unexpected shared-network flow: %+v", flow)
 	}
 }
 

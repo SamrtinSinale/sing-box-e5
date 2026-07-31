@@ -5,13 +5,15 @@ package ebpf
 import (
 	"net/netip"
 	"sync"
+
+	ECommon "github.com/sagernet/sing-box/common/ebpf"
 )
 
 type udpClientTable struct {
 	access             sync.RWMutex
 	clients            map[netip.AddrPort]*udpClientState
 	redirectAccess     sync.Mutex
-	redirectReferences map[netip.Addr]uint32
+	redirectReferences map[udpRedirectReference]uint32
 }
 
 type udpClientState struct {
@@ -22,8 +24,20 @@ type udpClientState struct {
 }
 
 type udpRedirectBinding struct {
-	address   netip.Addr
-	connected bool
+	address    netip.Addr
+	connected  bool
+	reference  udpRedirectReference
+	sharedFlow *ECommon.SharedNetworkFlow
+}
+
+type udpRedirectReference struct {
+	client  netip.AddrPort
+	address netip.Addr
+}
+
+type udpRedirectRelease struct {
+	reference  udpRedirectReference
+	sharedFlow *ECommon.SharedNetworkFlow
 }
 
 func (t *udpClientTable) load(client netip.AddrPort) (*udpClientState, bool) {
@@ -61,10 +75,54 @@ func (t *udpClientTable) setBinding(
 	connected bool,
 	uid uint32,
 ) []netip.Addr {
+	releases := t.setBinding0(
+		client,
+		destination,
+		redirectAddress,
+		connected,
+		uid,
+		udpRedirectReference{address: redirectAddress},
+		nil,
+	)
+	addresses := make([]netip.Addr, 0, len(releases))
+	for _, release := range releases {
+		addresses = append(addresses, release.reference.address)
+	}
+	return addresses
+}
+
+func (t *udpClientTable) setSharedBinding(
+	client netip.AddrPort,
+	destination netip.AddrPort,
+	redirectAddress netip.Addr,
+	flow *ECommon.SharedNetworkFlow,
+) []udpRedirectRelease {
+	return t.setBinding0(
+		client,
+		destination,
+		redirectAddress,
+		false,
+		0,
+		udpRedirectReference{client: client, address: redirectAddress},
+		flow,
+	)
+}
+
+func (t *udpClientTable) setBinding0(
+	client netip.AddrPort,
+	destination netip.AddrPort,
+	redirectAddress netip.Addr,
+	connected bool,
+	uid uint32,
+	reference udpRedirectReference,
+	sharedFlow *ECommon.SharedNetworkFlow,
+) []udpRedirectRelease {
 	t.access.RLock()
 	clientState, loaded := t.clients[client]
 	if loaded {
-		released := t.setClientBinding(clientState, destination, redirectAddress, connected, uid)
+		released := t.setClientBinding(
+			clientState, destination, redirectAddress, connected, uid, reference, sharedFlow,
+		)
 		t.access.RUnlock()
 		return released
 	}
@@ -72,7 +130,9 @@ func (t *udpClientTable) setBinding(
 
 	t.access.Lock()
 	clientState = t.loadOrCreateLocked(client)
-	released := t.setClientBinding(clientState, destination, redirectAddress, connected, uid)
+	released := t.setClientBinding(
+		clientState, destination, redirectAddress, connected, uid, reference, sharedFlow,
+	)
 	t.access.Unlock()
 	return released
 }
@@ -83,7 +143,9 @@ func (t *udpClientTable) setClientBinding(
 	redirectAddress netip.Addr,
 	connected bool,
 	uid uint32,
-) []netip.Addr {
+	reference udpRedirectReference,
+	sharedFlow *ECommon.SharedNetworkFlow,
+) []udpRedirectRelease {
 	clientState.access.RLock()
 	current, loaded := clientState.bindings[destination]
 	uidMatches := clientState.uid == uid
@@ -100,22 +162,40 @@ func (t *udpClientTable) setClientBinding(
 		return nil
 	}
 	clientState.bindings[destination] = udpRedirectBinding{
-		address:   redirectAddress,
-		connected: connected,
+		address:    redirectAddress,
+		connected:  connected,
+		reference:  reference,
+		sharedFlow: sharedFlow,
 	}
 
 	t.redirectAccess.Lock()
 	defer t.redirectAccess.Unlock()
 	if !connected {
-		t.retainRedirectLocked(redirectAddress)
+		t.retainRedirectLocked(reference)
 	}
-	if loaded && !current.connected && t.releaseRedirectLocked(current.address) {
-		return []netip.Addr{current.address}
+	if loaded && !current.connected && t.releaseRedirectLocked(current.reference) {
+		return []udpRedirectRelease{{
+			reference:  current.reference,
+			sharedFlow: current.sharedFlow,
+		}}
 	}
 	return nil
 }
 
 func (t *udpClientTable) delete(client netip.AddrPort, expected *udpClientState) []netip.Addr {
+	releases := t.delete0(client, expected)
+	addresses := make([]netip.Addr, 0, len(releases))
+	for _, release := range releases {
+		addresses = append(addresses, release.reference.address)
+	}
+	return addresses
+}
+
+func (t *udpClientTable) deleteShared(client netip.AddrPort, expected *udpClientState) []udpRedirectRelease {
+	return t.delete0(client, expected)
+}
+
+func (t *udpClientTable) delete0(client netip.AddrPort, expected *udpClientState) []udpRedirectRelease {
 	t.access.Lock()
 	defer t.access.Unlock()
 	if t.clients[client] != expected {
@@ -127,31 +207,34 @@ func (t *udpClientTable) delete(client netip.AddrPort, expected *udpClientState)
 	defer expected.access.Unlock()
 	t.redirectAccess.Lock()
 	defer t.redirectAccess.Unlock()
-	var released []netip.Addr
+	var released []udpRedirectRelease
 	for _, binding := range expected.bindings {
-		if !binding.connected && t.releaseRedirectLocked(binding.address) {
-			released = append(released, binding.address)
+		if !binding.connected && t.releaseRedirectLocked(binding.reference) {
+			released = append(released, udpRedirectRelease{
+				reference:  binding.reference,
+				sharedFlow: binding.sharedFlow,
+			})
 		}
 	}
 	clear(expected.bindings)
 	return released
 }
 
-func (t *udpClientTable) retainRedirectLocked(redirectAddress netip.Addr) {
+func (t *udpClientTable) retainRedirectLocked(reference udpRedirectReference) {
 	if t.redirectReferences == nil {
-		t.redirectReferences = make(map[netip.Addr]uint32)
+		t.redirectReferences = make(map[udpRedirectReference]uint32)
 	}
-	t.redirectReferences[redirectAddress]++
+	t.redirectReferences[reference]++
 }
 
-func (t *udpClientTable) releaseRedirectLocked(redirectAddress netip.Addr) bool {
-	references := t.redirectReferences[redirectAddress]
+func (t *udpClientTable) releaseRedirectLocked(reference udpRedirectReference) bool {
+	references := t.redirectReferences[reference]
 	if references > 1 {
-		t.redirectReferences[redirectAddress] = references - 1
+		t.redirectReferences[reference] = references - 1
 		return false
 	}
 	if references == 1 {
-		delete(t.redirectReferences, redirectAddress)
+		delete(t.redirectReferences, reference)
 		return true
 	}
 	return false

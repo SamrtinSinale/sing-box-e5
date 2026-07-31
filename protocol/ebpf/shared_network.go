@@ -276,7 +276,7 @@ func (s *sharedNetwork) NewConnection(ctx context.Context, conn net.Conn, metada
 	}
 	client := M.SocksaddrFromNet(conn.RemoteAddr()).AddrPort()
 	redirect := M.SocksaddrFromNet(conn.LocalAddr()).AddrPort()
-	original, err := s.backend.LookupOriginal(ECommon.ProtocolTCP, client, redirect)
+	original, flow, err := s.backend.LookupFlow(ECommon.ProtocolTCP, client, redirect)
 	if err != nil {
 		s.parent.logger.ErrorContext(ctx, "lookup shared-network TCP original destination: ", err)
 		conn.Close()
@@ -286,6 +286,9 @@ func (s *sharedNetwork) NewConnection(ctx context.Context, conn net.Conn, metada
 	metadata.InboundType = s.parent.Type()
 	metadata.Source = M.SocksaddrFromNetIP(client)
 	metadata.Destination = M.SocksaddrFromNetIP(original.Destination)
+	onClose = N.AppendClose(onClose, func(error) {
+		s.releaseFlow(flow)
+	})
 	s.parent.router.RouteConnectionEx(ctx, conn, metadata, onClose)
 }
 
@@ -300,13 +303,13 @@ func (s *sharedNetwork) NewPacket(buffer *buf.Buffer, oob []byte, source M.Socks
 	}
 	client := source.AddrPort()
 	redirect := netip.AddrPortFrom(redirectAddress, s.listenPort)
-	original, err := s.backend.LookupOriginal(ECommon.ProtocolUDP, client, redirect)
+	original, flow, err := s.backend.LookupFlow(ECommon.ProtocolUDP, client, redirect)
 	if err != nil {
 		s.parent.logger.Warn("lookup shared-network UDP original destination: ", err)
 		return
 	}
-	released := s.udpClients.setBinding(client, original.Destination, redirectAddress, false, 0)
-	s.deleteUDPRedirects(client, released)
+	released := s.udpClients.setSharedBinding(client, original.Destination, redirectAddress, flow)
+	s.releaseFlows(released)
 	s.udpNat.NewPacket([][]byte{buffer.Bytes()}, source, M.SocksaddrFromNetIP(original.Destination), nil)
 }
 
@@ -332,19 +335,25 @@ func (s *sharedNetwork) preparePacketConnection(source M.Socksaddr, destination 
 		clientState: clientState,
 	}
 	return true, ctx, writer, func(error) {
-		s.deleteUDPRedirects(client, s.udpClients.delete(client, clientState))
+		s.releaseFlows(s.udpClients.deleteShared(client, clientState))
 	}
 }
 
-func (s *sharedNetwork) deleteUDPRedirects(client netip.AddrPort, redirects []netip.Addr) {
+func (s *sharedNetwork) releaseFlows(releases []udpRedirectRelease) {
 	if s.backend == nil {
 		return
 	}
-	for _, address := range redirects {
-		redirect := netip.AddrPortFrom(address, s.listenPort)
-		if err := s.backend.DeleteRedirect(ECommon.ProtocolUDP, client, redirect); err != nil {
-			s.parent.logger.Warn("delete shared-network UDP redirect mapping for ", redirect, ": ", err)
-		}
+	for _, release := range releases {
+		s.releaseFlow(release.sharedFlow)
+	}
+}
+
+func (s *sharedNetwork) releaseFlow(flow *ECommon.SharedNetworkFlow) {
+	if s.backend == nil || flow == nil {
+		return
+	}
+	if err := s.backend.ReleaseFlow(flow); err != nil {
+		s.parent.logger.Warn("release shared-network flow: ", err)
 	}
 }
 

@@ -76,6 +76,47 @@ type sharedNetworkRedirectKey struct {
 	ClientAddr   [16]byte
 }
 
+type sharedNetworkOriginalKey struct {
+	InterfaceIndex uint32
+	Family         uint8
+	Protocol       uint8
+	ClientPort     uint16
+	OriginalPort   uint16
+	Reserved       uint16
+	ClientAddr     [16]byte
+	OriginalAddr   [16]byte
+}
+
+type sharedNetworkTokenValue struct {
+	TokenAddr [16]byte
+}
+
+type sharedNetworkReverseKey struct {
+	InterfaceIndex uint32
+	Family         uint8
+	Protocol       uint8
+	ClientPort     uint16
+	TokenPort      uint16
+	Reserved       uint16
+	ClientAddr     [16]byte
+	TokenAddr      [16]byte
+}
+
+type sharedNetworkRedirectValue struct {
+	Family         uint8
+	Protocol       uint8
+	Port           uint16
+	Addr           [16]byte
+	InterfaceIndex uint32
+	Reserved       uint32
+}
+
+type SharedNetworkFlow struct {
+	originalKey sharedNetworkOriginalKey
+	reverseKey  sharedNetworkReverseKey
+	redirectKey sharedNetworkRedirectKey
+}
+
 const (
 	sharedNetworkFlagIPv4 = 1 << iota
 	sharedNetworkFlagIPv6
@@ -251,33 +292,43 @@ func (b *SharedNetworkBackend) LookupOriginal(
 	client netip.AddrPort,
 	redirect netip.AddrPort,
 ) (OriginalDestination, error) {
+	original, _, err := b.LookupFlow(protocol, client, redirect)
+	return original, err
+}
+
+func (b *SharedNetworkBackend) LookupFlow(
+	protocol uint8,
+	client netip.AddrPort,
+	redirect netip.AddrPort,
+) (OriginalDestination, *SharedNetworkFlow, error) {
 	if b == nil {
-		return OriginalDestination{}, osErrClosed
+		return OriginalDestination{}, nil, osErrClosed
 	}
 	key, err := makeSharedNetworkRedirectKey(protocol, client, redirect)
 	if err != nil {
-		return OriginalDestination{}, err
+		return OriginalDestination{}, nil, err
 	}
 	b.access.RLock()
 	defer b.access.RUnlock()
 	if b.runtime == nil {
-		return OriginalDestination{}, osErrClosed
+		return OriginalDestination{}, nil, osErrClosed
 	}
-	var original originalDestination
+	var value sharedNetworkRedirectValue
 	if err = lookupMap(
 		int(b.runtime.redirect_map_fd),
 		unsafe.Pointer(&key),
-		unsafe.Pointer(&original),
+		unsafe.Pointer(&value),
 	); err != nil {
-		return OriginalDestination{}, E.Cause(err, "lookup shared-network original destination")
+		return OriginalDestination{}, nil, E.Cause(err, "lookup shared-network original destination")
 	}
-	address, err := originalDestinationAddress(original)
+	address, err := sharedNetworkOriginalAddress(value)
 	if err != nil {
-		return OriginalDestination{}, err
+		return OriginalDestination{}, nil, err
 	}
+	flow := makeSharedNetworkFlow(key, value)
 	return OriginalDestination{
-		Destination: netip.AddrPortFrom(address, original.Port),
-	}, nil
+		Destination: netip.AddrPortFrom(address, value.Port),
+	}, &flow, nil
 }
 
 func makeSharedNetworkRedirectKey(
@@ -302,15 +353,63 @@ func makeSharedNetworkRedirectKey(
 	return key, nil
 }
 
-func originalDestinationAddress(original originalDestination) (netip.Addr, error) {
-	switch original.Family {
+func sharedNetworkOriginalAddress(value sharedNetworkRedirectValue) (netip.Addr, error) {
+	switch value.Family {
 	case addressFamilyIPv4:
-		return netip.AddrFrom4([4]byte(original.Addr[:4])), nil
+		return netip.AddrFrom4([4]byte(value.Addr[:4])), nil
 	case addressFamilyIPv6:
-		return netip.AddrFrom16(original.Addr), nil
+		return netip.AddrFrom16(value.Addr), nil
 	default:
-		return netip.Addr{}, E.New("invalid original destination family: ", original.Family)
+		return netip.Addr{}, E.New("invalid original destination family: ", value.Family)
 	}
+}
+
+func makeSharedNetworkFlow(key sharedNetworkRedirectKey, value sharedNetworkRedirectValue) SharedNetworkFlow {
+	return SharedNetworkFlow{
+		originalKey: sharedNetworkOriginalKey{
+			InterfaceIndex: value.InterfaceIndex,
+			Family:         key.Family,
+			Protocol:       key.Protocol,
+			ClientPort:     key.ClientPort,
+			OriginalPort:   value.Port,
+			ClientAddr:     key.ClientAddr,
+			OriginalAddr:   value.Addr,
+		},
+		reverseKey: sharedNetworkReverseKey{
+			InterfaceIndex: value.InterfaceIndex,
+			Family:         key.Family,
+			Protocol:       key.Protocol,
+			ClientPort:     key.ClientPort,
+			TokenPort:      key.RedirectPort,
+			ClientAddr:     key.ClientAddr,
+			TokenAddr:      key.RedirectAddr,
+		},
+		redirectKey: key,
+	}
+}
+
+func (b *SharedNetworkBackend) ReleaseFlow(flow *SharedNetworkFlow) error {
+	if b == nil || flow == nil {
+		return nil
+	}
+	b.access.RLock()
+	defer b.access.RUnlock()
+	if b.runtime == nil {
+		return nil
+	}
+	return E.Errors(
+		deleteMapIfExists(int(b.runtime.original_to_token_map_fd), unsafe.Pointer(&flow.originalKey)),
+		deleteMapIfExists(int(b.runtime.redirect_map_fd), unsafe.Pointer(&flow.redirectKey)),
+		deleteMapIfExists(int(b.runtime.token_to_original_map_fd), unsafe.Pointer(&flow.reverseKey)),
+	)
+}
+
+func deleteMapIfExists(mapFD int, key unsafe.Pointer) error {
+	err := deleteMap(mapFD, key)
+	if errors.Is(err, unix.ENOENT) {
+		return nil
+	}
+	return err
 }
 
 func (b *SharedNetworkBackend) DeleteRedirect(

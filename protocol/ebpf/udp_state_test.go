@@ -97,6 +97,25 @@ func TestUDPClientTableSharesUnconnectedRedirect(t *testing.T) {
 	}
 }
 
+func TestUDPClientTableSeparatesSharedRedirectsByClient(t *testing.T) {
+	var table udpClientTable
+	destination := netip.MustParseAddrPort("1.1.1.1:443")
+	redirectAddress := netip.MustParseAddr("127.128.0.3")
+	client1 := netip.MustParseAddrPort("192.168.43.10:1001")
+	client2 := netip.MustParseAddrPort("192.168.43.11:1001")
+
+	table.setSharedBinding(client1, destination, redirectAddress, nil)
+	table.setSharedBinding(client2, destination, redirectAddress, nil)
+	state1, _ := table.load(client1)
+	if released := table.deleteShared(client1, state1); len(released) != 1 {
+		t.Fatalf("first client flow was not released independently: %v", released)
+	}
+	state2, _ := table.load(client2)
+	if released := table.deleteShared(client2, state2); len(released) != 1 {
+		t.Fatalf("second client flow was not released independently: %v", released)
+	}
+}
+
 func TestUDPClientTableDoesNotReferenceConnectedRedirect(t *testing.T) {
 	var table udpClientTable
 	client := netip.MustParseAddrPort("127.0.0.1:2001")
@@ -190,5 +209,5 @@ func TestUDPClientTableConcurrentReleaseSelectsRedirectOnce(t *testing.T) {
 func redirectReferenceCount(table *udpClientTable, redirectAddress netip.Addr) uint32 {
 	table.redirectAccess.Lock()
 	defer table.redirectAccess.Unlock()
-	return table.redirectReferences[redirectAddress]
+	return table.redirectReferences[udpRedirectReference{address: redirectAddress}]
 }

@@ -12,6 +12,7 @@ import (
 const SharedNetworkMapCapacity = 65536
 
 type SharedNetworkBackend struct{}
+type SharedNetworkFlow struct{}
 
 func PrepareSharedNetwork(
 	*Backend,
@@ -38,6 +39,12 @@ func (b *SharedNetworkBackend) EgressProgramFD() int {
 }
 func (b *SharedNetworkBackend) LookupOriginal(uint8, netip.AddrPort, netip.AddrPort) (OriginalDestination, error) {
 	return OriginalDestination{}, unsupportedSharedNetworkError()
+}
+func (b *SharedNetworkBackend) LookupFlow(uint8, netip.AddrPort, netip.AddrPort) (OriginalDestination, *SharedNetworkFlow, error) {
+	return OriginalDestination{}, nil, unsupportedSharedNetworkError()
+}
+func (b *SharedNetworkBackend) ReleaseFlow(*SharedNetworkFlow) error {
+	return unsupportedSharedNetworkError()
 }
 func (b *SharedNetworkBackend) DeleteRedirect(uint8, netip.AddrPort, netip.AddrPort) error {
 	return unsupportedSharedNetworkError()

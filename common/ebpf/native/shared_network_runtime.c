@@ -79,7 +79,7 @@ int sb_ebpf_shared_network_prepare(
     runtime->redirect_map_fd = sb_ebpf_create_map(
         BPF_MAP_TYPE_LRU_HASH,
         sizeof(struct sb_shared_redirect_key),
-        sizeof(struct sb_shared_original_dst),
+        sizeof(struct sb_shared_redirect_value),
         SB_SHARED_NETWORK_MAP_ENTRIES,
         0U);
     stage = "create host maps";

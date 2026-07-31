@@ -277,6 +277,10 @@ destination address and port of selected TCP/UDP packets with a per-flow token
 and a random sing-box listener port. Egress restores the original source on
 replies. The original-destination key includes the client address and port, so
 different hotspot clients cannot alias each other's flow state.
+TCP flow state is released when the routed connection closes. UDP flow state
+is reference-counted by client and token, then released when its NAT session
+closes. Each release removes the original-to-token, token-to-original, and
+listener redirect entries together.
 
 DHCP ports 67, 68, 546, and 547 always bypass TC. In `dns_mode: hijack`,
 destination port 53 is captured before host, private-network, or

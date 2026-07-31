@@ -71,14 +71,13 @@ struct sb_shared_redirect_key {
     __u8 client_addr[16];
 };
 
-struct sb_shared_original_dst {
+struct sb_shared_redirect_value {
     __u8 family;
     __u8 protocol;
     __u16 port;
     __u8 addr[16];
-    __u8 flags;
-    __u8 reserved[3];
-    __u64 socket_cookie;
+    __u32 ifindex;
+    __u32 reserved;
 };
 
 struct sb_shared_scratch {
@@ -87,17 +86,16 @@ struct sb_shared_scratch {
     struct sb_shared_reverse_key reverse_key;
     struct sb_shared_reverse_value reverse_value;
     struct sb_shared_redirect_key redirect_key;
-    __u8 redirect_value_padding[4];
-    struct sb_shared_original_dst redirect_value;
-    __u8 padding[56];
+    struct sb_shared_redirect_value redirect_value;
+    __u8 padding[64];
 };
 
 _Static_assert(sizeof(struct sb_shared_control) == 36U, "shared control ABI");
 _Static_assert(sizeof(struct sb_shared_original_key) == 44U, "shared original key ABI");
 _Static_assert(sizeof(struct sb_shared_reverse_key) == 44U, "shared reverse key ABI");
 _Static_assert(sizeof(struct sb_shared_redirect_key) == 40U, "shared redirect key ABI");
-_Static_assert(sizeof(struct sb_shared_original_dst) == 32U, "shared original destination ABI");
-_Static_assert(__builtin_offsetof(struct sb_shared_scratch, redirect_value) == 168U, "shared redirect value offset ABI");
+_Static_assert(sizeof(struct sb_shared_redirect_value) == 28U, "shared redirect value ABI");
+_Static_assert(__builtin_offsetof(struct sb_shared_scratch, redirect_value) == 164U, "shared redirect value offset ABI");
 _Static_assert(sizeof(struct sb_shared_scratch) == SB_SHARED_NETWORK_SCRATCH_SIZE, "shared-network scratch ABI");
 
 #endif
