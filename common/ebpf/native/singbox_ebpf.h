@@ -12,6 +12,7 @@
 #define SB_EBPF_DEFAULT_CGROUP_PATH "/sys/fs/cgroup"
 #define SB_EBPF_MAX_REDIRECT_MAP_ENTRIES 65536U
 #define SB_EBPF_MAX_UDP_PEER_MAP_ENTRIES 65536U
+#define SB_EBPF_MAX_POLICY_MAP_ENTRIES 4096U
 #define SB_EBPF_ORIGINAL_DST_FLAG_CONNECTED_UDP 1U
 
 #define SB_EBPF_PROTO_TCP 6U
@@ -52,6 +53,11 @@ struct sb_ebpf_udp_peer_value {
     uint8_t addr[16];
 };
 
+struct sb_ebpf_uid_lpm_key {
+    uint32_t prefixlen;
+    uint8_t uid[4];
+};
+
 struct sb_ebpf_inbound_config {
     uint8_t inbound_network;
     bool disable_ipv4;
@@ -66,6 +72,8 @@ struct sb_ebpf_inbound_runtime {
     int redirect_map_fd;
     int udp_peer_map_fd;
     int bypass_socket_cookie_map_fd;
+    int include_uid_map_fd;
+    int exclude_uid_map_fd;
     int connect4_prog_fd;
     int connect6_prog_fd;
     int connect6_v4mapped_prog_fd;
@@ -88,6 +96,8 @@ int sb_ebpf_inbound_prepare(
     bool enable_ipv6,
     const uint8_t redirect_ipv6[16],
     uint32_t redirect_ipv6_prefix_bits,
+    uint32_t include_uid_entries,
+    uint32_t exclude_uid_entries,
     struct sb_ebpf_inbound_runtime *runtime);
 int sb_ebpf_inbound_attach(struct sb_ebpf_inbound_runtime *runtime);
 void sb_ebpf_inbound_close(struct sb_ebpf_inbound_runtime *runtime);

@@ -24,7 +24,11 @@ It is included only in builds made with the `with_ebpf` build tag and cgo.
   "redirect_address": [
     "127.128.0.0/9",
     "fd53:696e:672d:626f::/64"
-  ]
+  ],
+  "include_uid": [],
+  "include_uid_range": [],
+  "exclude_uid": [],
+  "exclude_uid_range": []
 }
 ```
 
@@ -57,6 +61,31 @@ Both if empty.
 
 Protocols not selected by `network` bypass the eBPF inbound.
 
+#### include_uid
+
+List of process UIDs to intercept.
+
+When `include_uid` or `include_uid_range` is non-empty, traffic from UIDs not
+matched by either field bypasses the eBPF inbound.
+
+#### include_uid_range
+
+List of process UID ranges to intercept, in `start:end` format.
+
+#### exclude_uid
+
+List of process UIDs to bypass.
+
+Exclude rules take priority over include rules.
+
+#### exclude_uid_range
+
+List of process UID ranges to bypass, in `start:end` format.
+
+UID rules match the effective UID of the process performing the socket
+operation. Ranges are compiled into compressed eBPF LPM trie entries instead
+of being expanded into individual UIDs.
+
 #### redirect_address
 
 Internal address prefixes used to redirect intercepted connections to the
@@ -85,7 +114,7 @@ prefix through the loopback interface in the network namespace selected by
 `netns`. An existing local route that covers the prefix is reused. On shutdown,
 sing-box removes only routes created by this inbound.
 
-There are no UID, CIDR, private-network, interface, or DNS policy fields. The
+There are no CIDR, private-network, interface, or DNS policy fields. The
 programs attach to the root cgroup2 mount discovered from
 `/proc/self/mountinfo`, so all local application sockets in that hierarchy are
 intercepted. Loopback traffic is left local.

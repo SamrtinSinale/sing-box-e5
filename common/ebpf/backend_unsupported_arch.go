@@ -16,7 +16,7 @@ func unsupportedArchitectureError() error {
 	return E.New("eBPF inbound is not supported on ", runtime.GOOS, "/", runtime.GOARCH)
 }
 
-func Prepare(string, uint16, bool, bool, netip.Prefix, netip.Prefix) (*Backend, error) {
+func Prepare(string, uint16, bool, bool, netip.Prefix, netip.Prefix, Policy) (*Backend, error) {
 	return nil, unsupportedArchitectureError()
 }
 

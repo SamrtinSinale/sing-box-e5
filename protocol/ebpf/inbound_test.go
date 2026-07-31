@@ -129,6 +129,30 @@ func TestNormalizeRedirectAddressesRejectsInvalid(t *testing.T) {
 	}
 }
 
+func TestParseUIDRanges(t *testing.T) {
+	ranges, err := parseUIDRanges([]uint32{0, 1000}, []string{"1001:99999", "0xffffffff:0xffffffff"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := [][2]uint32{{0, 0}, {1000, 1000}, {1001, 99999}, {0xffffffff, 0xffffffff}}
+	if len(ranges) != len(expected) {
+		t.Fatalf("unexpected UID range count: %d", len(ranges))
+	}
+	for rangeIndex, uidRange := range ranges {
+		if uidRange.Start != expected[rangeIndex][0] || uidRange.End != expected[rangeIndex][1] {
+			t.Fatalf("unexpected UID range %d: %+v", rangeIndex, uidRange)
+		}
+	}
+}
+
+func TestParseUIDRangesRejectsInvalid(t *testing.T) {
+	for _, uidRange := range []string{"1000", ":1000", "1000:", "1001:1000", "x:1000"} {
+		if _, err := parseUIDRanges(nil, []string{uidRange}); err == nil {
+			t.Fatalf("expected UID range to be rejected: %s", uidRange)
+		}
+	}
+}
+
 func TestRedirectAddressFromOOB(t *testing.T) {
 	ipv4Address := netip.MustParseAddr("127.23.45.67")
 	ipv4OOB := ipv4PacketInfo(ipv4Address)

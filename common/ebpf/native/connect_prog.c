@@ -17,6 +17,7 @@
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 /* BPF_MAP_TYPE_LRU_HASH. Android NDK headers expose it as an enum, not a preprocessor macro. */
 #define SB_EBPF_REDIRECT_MAP_TYPE 9U
+#define SB_EBPF_LPM_TRIE_MAP_TYPE 11U
 
 #define BPF_ALU64_IMM_OP(OP, DST, IMM) ((struct bpf_insn){.code = BPF_ALU64 | BPF_OP(OP) | BPF_K, .dst_reg = DST, .imm = (int32_t)(IMM)})
 #define BPF_ALU64_REG_OP(OP, DST, SRC) ((struct bpf_insn){.code = BPF_ALU64 | BPF_OP(OP) | BPF_X, .dst_reg = DST, .src_reg = SRC})
@@ -45,6 +46,7 @@ enum {
     STACK_SAVED_V6_WORD1 = -212,
     STACK_SAVED_V6_WORD2 = -216,
     STACK_COOKIE_KEY = -232,
+    STACK_UID_KEY = -240,
 };
 
 struct bpf_builder {
@@ -174,6 +176,16 @@ static int create_bypass_socket_cookie_map(uint32_t max_entries) {
         0U);
 }
 
+static int create_uid_policy_map(uint32_t max_entries) {
+    if (max_entries == 0U) return -1;
+    return sb_ebpf_create_map(
+        (enum bpf_map_type)SB_EBPF_LPM_TRIE_MAP_TYPE,
+        sizeof(struct sb_ebpf_uid_lpm_key),
+        sizeof(uint8_t),
+        max_entries,
+        BPF_F_NO_PREALLOC);
+}
+
 static void emit_zero_region(struct bpf_builder *builder, int base_off, size_t size) {
     for (size_t off = 0; off < size; off += sizeof(uint32_t)) {
         emit(builder, BPF_ST_MEM(BPF_W, BPF_REG_10, (int16_t)(base_off + (int)off), 0));
@@ -198,6 +210,46 @@ static void emit_socket_cookie_bypass(
     bypass_jumps[(*bypass_jump_count)++] =
         emit_jump(builder, BPF_JMP_IMM_OP(BPF_JNE, BPF_REG_0, 0, 0));
     patch_jump(builder, no_cookie, builder->count);
+}
+
+static void emit_uid_policy_filter(
+    struct bpf_builder *builder,
+    int include_uid_map_fd,
+    int exclude_uid_map_fd,
+    size_t *bypass_jumps,
+    size_t *bypass_jump_count) {
+    if (include_uid_map_fd < 0 && exclude_uid_map_fd < 0) return;
+
+    emit(builder, BPF_CALL_FUNC(BPF_FUNC_get_current_uid_gid));
+    emit(builder, BPF_MOV32_REG(BPF_REG_2, BPF_REG_0));
+    emit(builder, BPF_ENDIAN_OP(BPF_REG_2, 32));
+    emit(builder, BPF_ST_MEM(
+        BPF_W,
+        BPF_REG_10,
+        STACK_UID_KEY + (int)offsetof(struct sb_ebpf_uid_lpm_key, prefixlen),
+        32));
+    emit(builder, BPF_STX_MEM(
+        BPF_W,
+        BPF_REG_10,
+        BPF_REG_2,
+        STACK_UID_KEY + (int)offsetof(struct sb_ebpf_uid_lpm_key, uid)));
+
+    if (exclude_uid_map_fd >= 0) {
+        emit_ld_map_fd(builder, BPF_REG_1, exclude_uid_map_fd);
+        emit(builder, BPF_MOV64_REG(BPF_REG_2, BPF_REG_10));
+        emit(builder, BPF_ALU64_IMM_OP(BPF_ADD, BPF_REG_2, STACK_UID_KEY));
+        emit(builder, BPF_CALL_FUNC(BPF_FUNC_map_lookup_elem));
+        bypass_jumps[(*bypass_jump_count)++] =
+            emit_jump(builder, BPF_JMP_IMM_OP(BPF_JNE, BPF_REG_0, 0, 0));
+    }
+    if (include_uid_map_fd >= 0) {
+        emit_ld_map_fd(builder, BPF_REG_1, include_uid_map_fd);
+        emit(builder, BPF_MOV64_REG(BPF_REG_2, BPF_REG_10));
+        emit(builder, BPF_ALU64_IMM_OP(BPF_ADD, BPF_REG_2, STACK_UID_KEY));
+        emit(builder, BPF_CALL_FUNC(BPF_FUNC_map_lookup_elem));
+        bypass_jumps[(*bypass_jump_count)++] =
+            emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_0, 0, 0));
+    }
 }
 
 static void emit_connected_udp_original_flag(
@@ -765,6 +817,8 @@ static bool emit_ipv4_mapped_ipv6_branch(
 
 static int build_ipv4_sock_addr_prog(
     const struct sb_ebpf_inbound_config *config,
+    int include_uid_map_fd,
+    int exclude_uid_map_fd,
     int redirect_map_fd,
     int udp_peer_map_fd,
     int bypass_socket_cookie_map_fd,
@@ -783,6 +837,8 @@ static int build_ipv4_sock_addr_prog(
     emit_socket_cookie_bypass(&b, bypass_socket_cookie_map_fd, bypass_jumps, &bypass_jump_count);
     emit_inbound_network_filter(
         &b, config, protocol, protocol_from_context, bypass_jumps, &bypass_jump_count);
+    emit_uid_policy_filter(
+        &b, include_uid_map_fd, exclude_uid_map_fd, bypass_jumps, &bypass_jump_count);
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_7, BPF_REG_6, offsetof(struct bpf_sock_addr, user_ip4)));
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_8, BPF_REG_6, offsetof(struct bpf_sock_addr, user_port)));
     // Connected UDP send() may not hit UDP_SENDMSG on Android kernels, so CONNECT must continue interception.
@@ -833,6 +889,8 @@ static int build_ipv4_sock_addr_prog(
 
 static int build_ipv6_sock_addr_prog(
     const struct sb_ebpf_inbound_config *config,
+    int include_uid_map_fd,
+    int exclude_uid_map_fd,
     int redirect_map_fd,
     int udp_peer_map_fd,
     int bypass_socket_cookie_map_fd,
@@ -853,6 +911,8 @@ static int build_ipv6_sock_addr_prog(
     emit_socket_cookie_bypass(&b, bypass_socket_cookie_map_fd, bypass_jumps, &bypass_jump_count);
     emit_inbound_network_filter(
         &b, config, protocol, protocol_from_context, bypass_jumps, &bypass_jump_count);
+    emit_uid_policy_filter(
+        &b, include_uid_map_fd, exclude_uid_map_fd, bypass_jumps, &bypass_jump_count);
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_7, BPF_REG_6, offsetof(struct bpf_sock_addr, user_ip6)));
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_8, BPF_REG_6, offsetof(struct bpf_sock_addr, user_ip6) + 4));
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_9, BPF_REG_6, offsetof(struct bpf_sock_addr, user_ip6) + 8));
@@ -949,6 +1009,8 @@ static int build_ipv6_sock_addr_prog(
 
 static int build_ipv4_mapped_ipv6_sock_addr_prog(
     const struct sb_ebpf_inbound_config *config,
+    int include_uid_map_fd,
+    int exclude_uid_map_fd,
     int redirect_map_fd,
     int udp_peer_map_fd,
     int bypass_socket_cookie_map_fd,
@@ -969,6 +1031,8 @@ static int build_ipv4_mapped_ipv6_sock_addr_prog(
     emit_socket_cookie_bypass(&b, bypass_socket_cookie_map_fd, bypass_jumps, &bypass_jump_count);
     emit_inbound_network_filter(
         &b, config, protocol, protocol_from_context, bypass_jumps, &bypass_jump_count);
+    emit_uid_policy_filter(
+        &b, include_uid_map_fd, exclude_uid_map_fd, bypass_jumps, &bypass_jump_count);
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_7, BPF_REG_6, offsetof(struct bpf_sock_addr, user_ip6)));
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_8, BPF_REG_6, offsetof(struct bpf_sock_addr, user_ip6) + 4));
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_9, BPF_REG_6, offsetof(struct bpf_sock_addr, user_ip6) + 8));
@@ -1197,9 +1261,13 @@ int sb_ebpf_inbound_prepare(
 	bool enable_ipv6,
 	const uint8_t redirect_ipv6[16],
 	uint32_t redirect_ipv6_prefix_bits,
+	uint32_t include_uid_entries,
+	uint32_t exclude_uid_entries,
 	struct sb_ebpf_inbound_runtime *runtime) {
     if (runtime == NULL || listen_port == 0U || (!enable_tcp && !enable_udp) ||
         (!enable_ipv4 && !enable_ipv6) ||
+        include_uid_entries > SB_EBPF_MAX_POLICY_MAP_ENTRIES ||
+        exclude_uid_entries > SB_EBPF_MAX_POLICY_MAP_ENTRIES ||
         (enable_ipv4 && (redirect_ipv4 == NULL ||
                          redirect_ipv4_prefix_bits < 8U ||
                          redirect_ipv4_prefix_bits > 10U)) ||
@@ -1226,8 +1294,12 @@ int sb_ebpf_inbound_prepare(
     runtime->redirect_map_fd = create_redirect_map(SB_EBPF_MAX_REDIRECT_MAP_ENTRIES);
     runtime->udp_peer_map_fd = create_udp_peer_map(SB_EBPF_MAX_UDP_PEER_MAP_ENTRIES);
     runtime->bypass_socket_cookie_map_fd = create_bypass_socket_cookie_map(SB_EBPF_MAX_REDIRECT_MAP_ENTRIES);
+    runtime->include_uid_map_fd = create_uid_policy_map(include_uid_entries);
+    runtime->exclude_uid_map_fd = create_uid_policy_map(exclude_uid_entries);
     if (runtime->redirect_map_fd < 0 || runtime->udp_peer_map_fd < 0 ||
-        runtime->bypass_socket_cookie_map_fd < 0) {
+        runtime->bypass_socket_cookie_map_fd < 0 ||
+        (include_uid_entries > 0U && runtime->include_uid_map_fd < 0) ||
+        (exclude_uid_entries > 0U && runtime->exclude_uid_map_fd < 0)) {
         goto fail;
     }
 
@@ -1239,6 +1311,7 @@ int sb_ebpf_inbound_prepare(
     if (enable_ipv4) {
         runtime->connect4_prog_fd = build_ipv4_sock_addr_prog(
             &config,
+            runtime->include_uid_map_fd, runtime->exclude_uid_map_fd,
             runtime->redirect_map_fd,
             runtime->udp_peer_map_fd,
             runtime->bypass_socket_cookie_map_fd,
@@ -1250,6 +1323,7 @@ int sb_ebpf_inbound_prepare(
         if (enable_udp) {
             runtime->udp4_sendmsg_prog_fd = build_ipv4_sock_addr_prog(
                 &config,
+                runtime->include_uid_map_fd, runtime->exclude_uid_map_fd,
                 runtime->redirect_map_fd,
                 runtime->udp_peer_map_fd,
                 runtime->bypass_socket_cookie_map_fd,
@@ -1267,6 +1341,7 @@ int sb_ebpf_inbound_prepare(
     if (enable_ipv6) {
         runtime->connect6_prog_fd = build_ipv6_sock_addr_prog(
             &config,
+            runtime->include_uid_map_fd, runtime->exclude_uid_map_fd,
             runtime->redirect_map_fd,
             runtime->udp_peer_map_fd,
             runtime->bypass_socket_cookie_map_fd,
@@ -1278,6 +1353,7 @@ int sb_ebpf_inbound_prepare(
         if (enable_udp) {
             runtime->udp6_sendmsg_prog_fd = build_ipv6_sock_addr_prog(
                 &config,
+                runtime->include_uid_map_fd, runtime->exclude_uid_map_fd,
                 runtime->redirect_map_fd,
                 runtime->udp_peer_map_fd,
                 runtime->bypass_socket_cookie_map_fd,
@@ -1294,6 +1370,7 @@ int sb_ebpf_inbound_prepare(
     } else {
         runtime->connect6_v4mapped_prog_fd = build_ipv4_mapped_ipv6_sock_addr_prog(
             &config,
+            runtime->include_uid_map_fd, runtime->exclude_uid_map_fd,
             runtime->redirect_map_fd,
             runtime->udp_peer_map_fd,
             runtime->bypass_socket_cookie_map_fd,
@@ -1305,6 +1382,7 @@ int sb_ebpf_inbound_prepare(
         if (enable_udp) {
             runtime->udp6_v4mapped_sendmsg_prog_fd = build_ipv4_mapped_ipv6_sock_addr_prog(
                 &config,
+                runtime->include_uid_map_fd, runtime->exclude_uid_map_fd,
                 runtime->redirect_map_fd,
                 runtime->udp_peer_map_fd,
                 runtime->bypass_socket_cookie_map_fd,
@@ -1412,6 +1490,8 @@ void sb_ebpf_inbound_close(struct sb_ebpf_inbound_runtime *runtime) {
     close_fd(&runtime->connect6_v4mapped_prog_fd);
     close_fd(&runtime->connect6_prog_fd);
     close_fd(&runtime->connect4_prog_fd);
+    close_fd(&runtime->exclude_uid_map_fd);
+    close_fd(&runtime->include_uid_map_fd);
     close_fd(&runtime->bypass_socket_cookie_map_fd);
     close_fd(&runtime->udp_peer_map_fd);
     close_fd(&runtime->redirect_map_fd);

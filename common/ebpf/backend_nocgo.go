@@ -11,7 +11,7 @@ import (
 
 type Backend struct{}
 
-func Prepare(string, uint16, bool, bool, netip.Prefix, netip.Prefix) (*Backend, error) {
+func Prepare(string, uint16, bool, bool, netip.Prefix, netip.Prefix, Policy) (*Backend, error) {
 	return nil, E.New("eBPF inbound is not supported by this build: cgo is disabled")
 }
 

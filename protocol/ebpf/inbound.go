@@ -6,6 +6,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -58,6 +59,7 @@ type Inbound struct {
 	enableUDP         bool
 	redirectIPv4      netip.Prefix
 	redirectIPv6      netip.Prefix
+	policy            ECommon.Policy
 	localRoutes       []*localRoute
 
 	bindingAccess sync.RWMutex
@@ -78,6 +80,14 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	redirectIPv4, redirectIPv6, err := normalizeRedirectAddresses(options.RedirectAddress)
 	if err != nil {
 		return nil, err
+	}
+	includeUID, err := parseUIDRanges(options.IncludeUID, options.IncludeUIDRange)
+	if err != nil {
+		return nil, E.Cause(err, "parse include_uid_range")
+	}
+	excludeUID, err := parseUIDRanges(options.ExcludeUID, options.ExcludeUIDRange)
+	if err != nil {
+		return nil, E.Cause(err, "parse exclude_uid_range")
 	}
 	network := options.Network.Build()
 	enableTCP := common.Contains(network, N.NetworkTCP)
@@ -100,6 +110,10 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		enableUDP:      enableUDP,
 		redirectIPv4:   redirectIPv4,
 		redirectIPv6:   redirectIPv6,
+		policy: ECommon.Policy{
+			IncludeUID: includeUID,
+			ExcludeUID: excludeUID,
+		},
 	}
 	udpTimeout := C.UDPTimeout
 	if listenOptions.UDPTimeout != 0 {
@@ -192,11 +206,43 @@ func normalizeRedirectAddresses(addresses []netip.Prefix) (netip.Prefix, netip.P
 	return ipv4Prefix, ipv6Prefix, nil
 }
 
+func parseUIDRanges(uidList []uint32, rangeList []string) ([]ECommon.UIDRange, error) {
+	uidRanges := make([]ECommon.UIDRange, 0, len(uidList)+len(rangeList))
+	for _, uid := range uidList {
+		uidRanges = append(uidRanges, ECommon.UIDRange{Start: uid, End: uid})
+	}
+	for _, uidRange := range rangeList {
+		separator := strings.IndexByte(uidRange, ':')
+		if separator < 0 {
+			return nil, E.New("missing ':' in range: ", uidRange)
+		}
+		if separator == 0 {
+			return nil, E.New("missing range start: ", uidRange)
+		}
+		if separator == len(uidRange)-1 {
+			return nil, E.New("missing range end: ", uidRange)
+		}
+		start, err := strconv.ParseUint(uidRange[:separator], 0, 32)
+		if err != nil {
+			return nil, E.Cause(err, "parse range start")
+		}
+		end, err := strconv.ParseUint(uidRange[separator+1:], 0, 32)
+		if err != nil {
+			return nil, E.Cause(err, "parse range end")
+		}
+		if start > end {
+			return nil, E.New("range start is greater than range end: ", uidRange)
+		}
+		uidRanges = append(uidRanges, ECommon.UIDRange{Start: uint32(start), End: uint32(end)})
+	}
+	return uidRanges, nil
+}
+
 func (i *Inbound) Start(stage adapter.StartStage) error {
 	switch stage {
 	case adapter.StartStateInitialize:
 		backend, err := ECommon.Prepare("", i.listenPort,
-			i.enableTCP, i.enableUDP, i.redirectIPv4, i.redirectIPv6)
+			i.enableTCP, i.enableUDP, i.redirectIPv4, i.redirectIPv6, i.policy)
 		if err != nil {
 			return err
 		}

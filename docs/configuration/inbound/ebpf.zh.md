@@ -23,7 +23,11 @@ eBPF 入站通过 cgroup socket-address 程序拦截本机产生的 TCP 和 UDP 
   "redirect_address": [
     "127.128.0.0/9",
     "fd53:696e:672d:626f::/64"
-  ]
+  ],
+  "include_uid": [],
+  "include_uid_range": [],
+  "exclude_uid": [],
+  "exclude_uid_range": []
 }
 ```
 
@@ -53,6 +57,30 @@ eBPF 入站在内部使用从 `redirect_address` 中选取的地址。因此，`
 
 未被 `network` 选中的协议会绕过 eBPF 入站。
 
+#### include_uid
+
+需要拦截的进程 UID 列表。
+
+当 `include_uid` 或 `include_uid_range` 非空时，未被这两个字段匹配的 UID
+产生的流量会绕过 eBPF 入站。
+
+#### include_uid_range
+
+需要拦截的进程 UID 范围列表，格式为 `start:end`。
+
+#### exclude_uid
+
+需要绕过的进程 UID 列表。
+
+exclude 规则的优先级高于 include 规则。
+
+#### exclude_uid_range
+
+需要绕过的进程 UID 范围列表，格式为 `start:end`。
+
+UID 规则匹配执行 socket 操作的进程有效 UID。UID 范围会被压缩为 eBPF LPM
+trie 条目，不会展开为逐 UID 条目。
+
 #### redirect_address
 
 将被拦截连接重定向到 sing-box listener 时使用的内部地址前缀。
@@ -74,7 +102,7 @@ sing-box 会在 `netns` 选定的网络命名空间中，通过 loopback 接口�
 前缀自动添加 `RTN_LOCAL` 路由。若已有本地路由能够覆盖该前缀则直接复用；
 关闭时只删除由当前入站创建的路由。
 
-配置不包含 UID、CIDR、私网、网卡或 DNS 策略。sing-box 从
+配置不包含 CIDR、私网、网卡或 DNS 策略。sing-box 从
 `/proc/self/mountinfo` 自动找到 cgroup2 根挂载点，并在该层拦截本机应用流量；
 回环流量保持本地直连。
 

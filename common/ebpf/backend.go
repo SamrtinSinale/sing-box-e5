@@ -19,6 +19,8 @@ static int singbox_ebpf_inbound_prepare(
 	bool enable_ipv6,
 	const uint8_t *redirect_ipv6,
 	uint32_t redirect_ipv6_prefix_bits,
+	uint32_t include_uid_entries,
+	uint32_t exclude_uid_entries,
 	struct sb_ebpf_inbound_runtime *runtime,
 	int *saved_errno) {
 	int result = sb_ebpf_inbound_prepare(
@@ -32,6 +34,8 @@ static int singbox_ebpf_inbound_prepare(
 		enable_ipv6,
 		redirect_ipv6,
 		redirect_ipv6_prefix_bits,
+		include_uid_entries,
+		exclude_uid_entries,
 		runtime);
 	if (result != 0) *saved_errno = errno;
 	return result;
@@ -97,6 +101,7 @@ func Prepare(
 	enableUDP bool,
 	redirectIPv4 netip.Prefix,
 	redirectIPv6 netip.Prefix,
+	policy Policy,
 ) (*Backend, error) {
 	if redirectIPv4.IsValid() &&
 		(!redirectIPv4.Addr().Is4() || redirectIPv4.Bits() < 8 || redirectIPv4.Bits() > 10) {
@@ -109,8 +114,15 @@ func Prepare(
 	if !redirectIPv4.IsValid() && !redirectIPv6.IsValid() {
 		return nil, E.New("missing eBPF redirect address")
 	}
+	includeUIDEntries, err := compileUIDPolicy("include_uid", policy.IncludeUID)
+	if err != nil {
+		return nil, err
+	}
+	excludeUIDEntries, err := compileUIDPolicy("exclude_uid", policy.ExcludeUID)
+	if err != nil {
+		return nil, err
+	}
 	if cgroupPath == "" {
-		var err error
 		cgroupPath, err = DetectCgroup2Mount()
 		if err != nil {
 			return nil, err
@@ -160,6 +172,8 @@ func Prepare(
 		C.bool(redirectIPv6.IsValid()),
 		redirectIPv6Pointer,
 		redirectIPv6Bits,
+		C.uint32_t(len(includeUIDEntries)),
+		C.uint32_t(len(excludeUIDEntries)),
 		runtimeState,
 		&savedErrno,
 	) != 0 {
@@ -171,13 +185,48 @@ func Prepare(
 		C.free(unsafe.Pointer(runtimeState))
 		return nil, eBPFOperationError("prepare eBPF inbound", prepareErr)
 	}
-	return &Backend{
+	backend := &Backend{
 		runtime:     runtimeState,
 		redirectMap: int(runtimeState.redirect_map_fd),
 		cookieMap:   int(runtimeState.bypass_socket_cookie_map_fd),
 		cgroupPath:  cgroupPath,
 		enableUDP:   enableUDP,
-	}, nil
+	}
+	if err = populateUIDPolicyMap(int(runtimeState.include_uid_map_fd), includeUIDEntries); err != nil {
+		_ = backend.Close()
+		return nil, E.Cause(err, "populate include_uid eBPF map")
+	}
+	if err = populateUIDPolicyMap(int(runtimeState.exclude_uid_map_fd), excludeUIDEntries); err != nil {
+		_ = backend.Close()
+		return nil, E.Cause(err, "populate exclude_uid eBPF map")
+	}
+	return backend, nil
+}
+
+func compileUIDPolicy(name string, uidRanges []UIDRange) ([]uidLPMKey, error) {
+	for _, uidRange := range uidRanges {
+		if uidRange.Start > uidRange.End {
+			return nil, E.New("invalid ", name, " range: ", uidRange.Start, ":", uidRange.End)
+		}
+	}
+	entries := compileUIDRanges(uidRanges)
+	if len(entries) > maxUIDPolicyEntries {
+		return nil, E.New(name, " compiles to too many eBPF map entries: ", len(entries), " > ", maxUIDPolicyEntries)
+	}
+	return entries, nil
+}
+
+func populateUIDPolicyMap(mapFD int, entries []uidLPMKey) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	value := uint8(1)
+	for entryIndex := range entries {
+		if err := updateMap(mapFD, unsafe.Pointer(&entries[entryIndex]), unsafe.Pointer(&value)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func raiseMemlockLimit() error {
