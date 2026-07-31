@@ -208,11 +208,20 @@ sing-box 会把自身创建的 socket 的 `SO_COOKIE` 登记到 eBPF LRU map。c
 用于热点或其他共享下游网络的可选转发代理。关闭或省略时，不会创建共享 listener、
 `clsact` qdisc、TC filter 或修改 sysctl。
 
+此模式同时支持 Android 和标准 Linux。在标准 Linux 上，它为已有路由 LAN、无线 AP
+或网关后的客户端提供 TC 透明代理；它本身不会创建下游网络，也不会自动把主机配置成
+路由器。
+
 启用后，`include_interface` 必须列出一个或多个 Ethernet-like 下游接口。不要选择
 `lo`、上游接口或 TUN、WireGuard、PPP、IPIP 等纯三层设备。接口可以在启动时尚未
 出现；此时 eBPF 入站会正常启动并等待，不启用 shared 数据面。已挂载的接口消失后，
 sing-box 会卸载其状态，同时保持本机 eBPF 入站运行；同名接口重新出现后会自动重新
 挂载。sing-box 会在网络变化后及每三秒重新同步接口列表。
+
+应选择客户端帧实际进入 TC ingress 的接口。Linux bridge 场景通常需要选择面向客户端
+的各个 bridge port，而不能假定 bridge master 一定能看到这些 ingress 帧；具体 hook
+路径取决于 bridge 和驱动。此模式面向客户端以本机为网关的路由下游网络，并非任意的
+二层透明网桥。
 
 对于每个已出现的接口，sing-box 先挂载 egress filter，再挂载 ingress filter，全部
 就绪后才启用数据面。Ingress 把选中的 TCP/UDP 数据包目标地址和端口改写为逐流令牌
@@ -227,16 +236,24 @@ DHCP 端口 67、68、546 和 547 始终绕过 TC。`dns_mode: hijack` 下，目
 IPv4 令牌使用配置的回环重定向前缀。仅当
 `net.ipv4.conf.<interface>.route_localnet` 原值为关闭时，sing-box 才会临时启用，
 并在 ingress、egress filter 都卸载后恢复；原本已启用的值不会被修改。IPv6 使用
-配置的 ULA 令牌前缀及此入站管理的本地路由。
+配置的 ULA 令牌前缀及此入站管理的本地路由。只有 `redirect_address` 显式包含 IPv6
+`/64` 时才会启用 IPv6 拦截；默认 redirect 配置仅启用 IPv4。
 
 实现会创建或复用 `clsact`，关闭时不会删除它，因此其他 TC filter 保持不变。
-使用 TC 优先级 `10`、ingress handle `0x5342` 和 egress handle `0x5343`。绕过流量
+使用 TC 优先级 `1`、ingress handle `0x5342` 和 egress handle `0x5343`。绕过流量
 返回 `TC_ACT_PIPE` 以继续后续 filter，被捕获流量返回 `TC_ACT_OK`。数字更小的
 优先级仍会先执行；sing-box 不会替换占用上述 handle 的其他 filter。
 
-系统仍负责创建热点或 bridge、IP forwarding、NAT、DHCP，以及 `shared_network`
-关闭时使用的 DNS 服务。绕过 Linux TC 的硬件热点卸载无法代理；应在每种 Android
-内核上验证实际下游接口及双向流量。
+优先级 `1` 会使 sing-box 先于 Android AOSP tethering TC offload（IPv6 优先级 `2`、
+IPv4 优先级 `3`）执行。Android 可以在首个连接前建立 IPv6 `/128` 转发表；如果
+sing-box 排在其后，公网 IPv6 会先被直接重定向到上游。发给热点网关的 DNS 不属于
+这种转发流量，因此“只能看到 IPv6 DNS、看不到后续公网 IPv6 连接”通常意味着公网
+流量已被更早的 tethering offload 路径取走。
+
+系统仍负责创建热点或 bridge、IP forwarding、IPv4 NAT、IPv6 RA/NDP、DHCP，以及
+`shared_network` 关闭时使用的 DNS 服务。绕过 Linux TC 的 XDP 或硬件热点卸载无法
+代理；应在每种 Android 内核上验证实际下游接口及双向流量。在标准 Linux 上还应验证
+所选 bridge port 的 hook 路径，以及是否已有优先级 `1` 的 TC filter。
 
 ## 构建
 

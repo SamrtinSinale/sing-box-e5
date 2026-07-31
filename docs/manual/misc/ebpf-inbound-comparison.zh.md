@@ -2,10 +2,8 @@
 
 本文对比当前项目的 eBPF 入站、[daeuniverse/dae](https://github.com/daeuniverse/dae)，以及 sing-box 的 TUN、Redirect、TProxy 入站。
 
-对比基于：
-
-- 当前项目提交：`ac3e5c68`
-- dae 提交：[`caa6f5e9`](https://github.com/daeuniverse/dae/commit/caa6f5e91776bc86d5b0edc940bb7d264359863c)（2026-07-31 主分支）
+本文随当前项目的 eBPF 实现维护；dae 对比基于
+[`caa6f5e9`](https://github.com/daeuniverse/dae/commit/caa6f5e91776bc86d5b0edc940bb7d264359863c)（2026-07-31 主分支）。
 
 ## 总体结论
 
@@ -75,6 +73,18 @@ UID 包含/排除策略、Android `dns_tether` UID 1052 排除以及 DHCP 端口
 | 额外内核能力 | cgroup v2、`CONFIG_CGROUP_BPF`、sock_addr/sock_release；热点还需 sched_cls、clsact、`CAP_NET_ADMIN` | TC ingress/egress、cgroup2、BTF、kprobe、ring buffer、`bpf_loop`、socket lookup/assignment；netkit 为可选优化 |
 | 新内核优化 | 暂无依赖新内核的特殊快速路径 | 6.7+ 可尝试 netkit；满足安全条件的 6.8+ 可使用 `bpf_redirect_peer`，否则回退 veth/普通 redirect |
 
+### `shared_network` 在标准 Linux 上的定位
+
+`shared_network` 不只适用于 Android。标准 Linux 路由器、无线 AP 或已有下游 LAN
+也可以使用它，但 sing-box 只负责在指定的 Ethernet-like 下游接口上挂载 TC，并将
+捕获的 TCP/UDP 交给自身路由。bridge、IP forwarding、IPv4 NAT、IPv6 RA/NDP、DHCP
+和未代理时的 DNS 服务仍由系统或其他守护进程负责。
+
+在 Linux bridge 上应选择客户端报文实际进入 TC ingress 的成员端口；bridge master
+是否能看到同一批帧取决于内核和驱动。该实现适合以本机为默认网关的路由下游，不是
+通用二层透明桥代理。sing-box 使用 TC 优先级 `1`，绕过流量会继续交给后续 filter；
+但先于 TC 执行的 XDP、硬件 offload 或同优先级的厂商程序仍可能使其看不到流量。
+
 因此，不能简单断言 dae 总是更快：
 
 - **Linux 网关、直连流量很多、希望按域名/MAC/端口分流**：dae 的架构更有优势。
@@ -103,6 +113,7 @@ UID 包含/排除策略、Android `dns_tether` UID 1052 排除以及 DHCP 端口
 
 - [当前项目 eBPF 入站文档](/configuration/inbound/ebpf/)
 - [当前项目 TUN 入站文档](/configuration/inbound/tun/)
+- [Android tethering BPF TC 优先级](https://android.googlesource.com/platform/packages/modules/Connectivity/+/refs/heads/main/Tethering/src/com/android/networkstack/tethering/BpfUtils.java)
 - [dae 工作原理](https://github.com/daeuniverse/dae/blob/caa6f5e91776bc86d5b0edc940bb7d264359863c/docs/en/how-it-works.md)
 - [dae 内核要求](https://github.com/daeuniverse/dae/blob/caa6f5e91776bc86d5b0edc940bb7d264359863c/docs/en/README.md#linux-kernel-requirement)
 - [dae eBPF 数据面实现](https://github.com/daeuniverse/dae/blob/caa6f5e91776bc86d5b0edc940bb7d264359863c/control/kern/tproxy.c)

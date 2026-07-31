@@ -34,8 +34,9 @@ import (
 )
 
 const (
-	sharedNetworkRefresh      = 3 * time.Second
-	sharedNetworkTCPriority   = 10
+	sharedNetworkRefresh = 3 * time.Second
+	// Run before Android tethering offload (IPv6 priority 2, IPv4 priority 3).
+	sharedNetworkTCPriority   = 1
 	sharedIngressFilterHandle = 0x5342
 	sharedEgressFilterHandle  = 0x5343
 )
@@ -132,6 +133,7 @@ func (s *sharedNetwork) Start(parentBackend *ECommon.Backend) error {
 		"eBPF shared-network ready: interfaces=[", s.tc.InterfaceString(),
 		"], listen_port=", s.listenPort,
 		", dns_mode=", s.parent.dnsMode,
+		", tc_priority=", sharedNetworkTCPriority,
 		", token_map_capacity=", ECommon.SharedNetworkMapCapacity,
 		", programs=[tc/ingress, tc/egress]",
 	)

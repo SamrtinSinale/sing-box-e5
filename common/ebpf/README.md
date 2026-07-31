@@ -71,8 +71,9 @@ go test -count=1 -run TestBackendProgramLoadIntegration -tags with_ebpf ./common
 ```
 
 The shared-network integration test additionally creates a temporary network
-namespace and veth pair. It verifies public TCP interception, DNS capture to
-the gateway in the default hijack mode, DHCP bypass, reply source restoration, TC cleanup, and
+namespace and veth pair. It verifies IPv4 and IPv6 public TCP interception,
+dual-stack DNS capture to the gateway in the default hijack mode, DHCP bypass,
+reply source restoration, TC cleanup, local redirect routes, and
 `route_localnet` restoration. It requires `ip` and `nc`:
 
 ```sh

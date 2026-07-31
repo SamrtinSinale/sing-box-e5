@@ -87,6 +87,7 @@ struct sb_shared_scratch {
     struct sb_shared_reverse_key reverse_key;
     struct sb_shared_reverse_value reverse_value;
     struct sb_shared_redirect_key redirect_key;
+    __u8 redirect_value_padding[4];
     struct sb_shared_original_dst redirect_value;
     __u8 padding[56];
 };
@@ -96,6 +97,7 @@ _Static_assert(sizeof(struct sb_shared_original_key) == 44U, "shared original ke
 _Static_assert(sizeof(struct sb_shared_reverse_key) == 44U, "shared reverse key ABI");
 _Static_assert(sizeof(struct sb_shared_redirect_key) == 40U, "shared redirect key ABI");
 _Static_assert(sizeof(struct sb_shared_original_dst) == 32U, "shared original destination ABI");
+_Static_assert(__builtin_offsetof(struct sb_shared_scratch, redirect_value) == 168U, "shared redirect value offset ABI");
 _Static_assert(sizeof(struct sb_shared_scratch) == SB_SHARED_NETWORK_SCRATCH_SIZE, "shared-network scratch ABI");
 
 #endif

@@ -73,6 +73,14 @@ func TestValidateSharedNetworkProtocols(t *testing.T) {
 	}
 }
 
+func TestSharedNetworkTCPriorityPrecedesAndroidTethering(t *testing.T) {
+	const androidTetheringIPv6Priority = 2
+	if sharedNetworkTCPriority >= androidTetheringIPv6Priority {
+		t.Fatalf("shared-network TC priority %d does not precede Android IPv6 tethering priority %d",
+			sharedNetworkTCPriority, androidTetheringIPv6Priority)
+	}
+}
+
 func TestValidateSharedNetworkLink(t *testing.T) {
 	valid := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{
 		Name:         "ap0",

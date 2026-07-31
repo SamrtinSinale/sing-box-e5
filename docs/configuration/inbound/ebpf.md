@@ -246,6 +246,11 @@ Optional forwarding proxy for a hotspot or another shared downstream network.
 When disabled or omitted, no shared listener, `clsact` qdisc, TC filter, or
 sysctl change is created.
 
+This mode is supported on standard Linux as well as Android. On standard
+Linux, it acts as a TC transparent proxy for clients behind an existing routed
+LAN, access point, or gateway. It does not create the downstream network or
+turn the host into a router by itself.
+
 When enabled, `include_interface` must list one or more downstream
 Ethernet-like interfaces. Do not select `lo`, an upstream interface, or a
 layer-3-only device such as TUN, WireGuard, PPP, or IPIP. An interface may be
@@ -254,6 +259,12 @@ and waits without enabling the shared data plane. If an attached interface
 disappears, sing-box detaches its state and keeps the local eBPF inbound
 running; the same interface name is attached again when it reappears. The list
 is reconciled after network changes and every three seconds.
+
+Select the interface where client frames actually enter TC ingress. For a
+Linux bridge this is commonly each client-facing bridge port, not necessarily
+the bridge master; the exact hook path depends on the bridge and driver. This
+mode is intended for a routed downstream whose clients use this host as their
+gateway, not for an arbitrary transparent layer-2 bridge.
 
 For every present interface, sing-box attaches an egress filter first and an
 ingress filter second, then enables the data plane. Ingress replaces the
@@ -273,19 +284,31 @@ For IPv4, token addresses use the configured loopback redirect prefix.
 sing-box temporarily enables `net.ipv4.conf.<interface>.route_localnet` only
 when it was disabled, and restores it after both TC filters are detached. An
 existing enabled value is left unchanged. IPv6 uses the configured ULA token
-prefix and the local route already managed by this inbound.
+prefix and the local route already managed by this inbound. IPv6 interception
+is disabled unless `redirect_address` explicitly includes an IPv6 `/64`; the
+default redirect configuration is IPv4-only.
 
 The implementation creates or reuses `clsact` but does not remove it on close,
-so unrelated filters remain intact. It uses TC priority `10`, ingress handle
+so unrelated filters remain intact. It uses TC priority `1`, ingress handle
 `0x5342`, and egress handle `0x5343`. Bypassed traffic returns `TC_ACT_PIPE`,
 allowing later filters to run; captured traffic returns `TC_ACT_OK`. A filter
 with a numerically lower priority can still act first. sing-box refuses to
 replace a different filter using one of its handles.
 
+Priority `1` places sing-box before Android's AOSP tethering TC offload
+(IPv6 priority `2`, IPv4 priority `3`). This is required because Android can
+install IPv6 `/128` forwarding entries before the first connection and redirect
+public IPv6 traffic before a later filter sees it. DNS sent to the hotspot
+gateway is not such forwarded traffic, so observing only IPv6 DNS in sing-box
+usually indicates that an earlier tethering offload path is taking the public
+IPv6 packets.
+
 The host remains responsible for hotspot or bridge creation, IP forwarding,
-NAT, DHCP, and the DNS service used while `shared_network` is disabled.
-Hardware tethering offload that bypasses Linux TC cannot be proxied; verify the
-actual downstream interface and both directions on each Android kernel.
+IPv4 NAT, IPv6 router advertisements and neighbor discovery, DHCP, and the DNS
+service used while `shared_network` is disabled. XDP or hardware tethering
+offload that bypasses Linux TC cannot be proxied; verify the actual downstream
+interface and both directions on each Android kernel. On standard Linux, also
+verify the chosen bridge-port hook and any pre-existing priority `1` TC filter.
 
 ## Build
 
