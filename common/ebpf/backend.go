@@ -493,10 +493,14 @@ func (b *Backend) UpdateBypassCIDR(prefixes []netip.Prefix) (bool, error) {
 					b.bypassIPv6CIDR,
 				)
 			}
-			return false, E.Errors(
-				E.Cause(err, "update IPv4 bypass CIDR eBPF map"),
-				E.Cause(rollbackErr, "rollback IPv6 bypass CIDR eBPF map"),
-			)
+			updateErr := E.Cause(err, "update IPv4 bypass CIDR eBPF map")
+			if rollbackErr != nil {
+				updateErr = E.Errors(
+					updateErr,
+					E.Cause(rollbackErr, "rollback IPv6 bypass CIDR eBPF map"),
+				)
+			}
+			return false, updateErr
 		}
 	}
 	b.bypassIPv4CIDR = slices.Clone(ipv4Prefixes)

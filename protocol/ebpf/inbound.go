@@ -6,6 +6,8 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,7 +37,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const defaultListenPort = 65532
+const (
+	defaultListenPort      = 65532
+	androidTetheringDNSUID = 1052
+)
 
 var defaultRedirectIPv4 = netip.MustParsePrefix("127.128.0.0/9")
 
@@ -50,6 +55,7 @@ type Inbound struct {
 	logger            log.ContextLogger
 	networkManager    adapter.NetworkManager
 	listenOptions     option.ListenOptions
+	cgroupPath        string
 	listener4         *listener.Listener
 	listener6         *listener.Listener
 	udpNat            *udpnat.Service
@@ -62,6 +68,8 @@ type Inbound struct {
 	redirectIPv6      netip.Prefix
 	policy            ECommon.Policy
 	localRoutes       []*localRoute
+	sharedOptions     option.EBPFSharedNetworkOptions
+	sharedNetwork     *sharedNetwork
 	backendAccess     sync.RWMutex
 	closeAccess       sync.Mutex
 	statsCancel       context.CancelFunc
@@ -80,6 +88,10 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	if err != nil {
 		return nil, err
 	}
+	cgroupPath, err := normalizeCgroupPath(options.CgroupPath)
+	if err != nil {
+		return nil, err
+	}
 	redirectIPv4, redirectIPv6, err := normalizeRedirectAddresses(options.RedirectAddress)
 	if err != nil {
 		return nil, err
@@ -92,9 +104,17 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	if err != nil {
 		return nil, E.Cause(err, "parse exclude_uid_range")
 	}
+	excludeUID = append(excludeUID, platformExcludedUIDRanges(runtime.GOOS)...)
+	sharedOptions, err := normalizeSharedNetworkOptions(options.SharedNetwork)
+	if err != nil {
+		return nil, err
+	}
 	network := options.Network.Build()
 	enableTCP := common.Contains(network, N.NetworkTCP)
 	enableUDP := common.Contains(network, N.NetworkUDP)
+	if err = validateSharedNetworkProtocols(sharedOptions, enableUDP); err != nil {
+		return nil, err
+	}
 	networkManager := service.FromContext[adapter.NetworkManager](ctx)
 	if networkManager == nil {
 		return nil, E.New("missing network manager")
@@ -106,11 +126,13 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		logger:         logger,
 		networkManager: networkManager,
 		listenOptions:  listenOptions,
+		cgroupPath:     cgroupPath,
 		listenPort:     listenOptions.ListenPort,
 		enableTCP:      enableTCP,
 		enableUDP:      enableUDP,
 		redirectIPv4:   redirectIPv4,
 		redirectIPv6:   redirectIPv6,
+		sharedOptions:  sharedOptions,
 		policy: ECommon.Policy{
 			IncludeUID: includeUID,
 			ExcludeUID: excludeUID,
@@ -135,6 +157,16 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		inbound.listener6 = inbound.newListener(network, true)
 	}
 	return inbound, nil
+}
+
+func normalizeCgroupPath(cgroupPath string) (string, error) {
+	if cgroupPath == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(cgroupPath) {
+		return "", E.New("eBPF cgroup_path must be absolute")
+	}
+	return filepath.Clean(cgroupPath), nil
 }
 
 func (i *Inbound) newListener(network []string, ipv6 bool) *listener.Listener {
@@ -243,12 +275,19 @@ func parseUIDRanges(uidList []uint32, rangeList []string) ([]ECommon.UIDRange, e
 	return uidRanges, nil
 }
 
+func platformExcludedUIDRanges(goos string) []ECommon.UIDRange {
+	if goos != "android" {
+		return nil
+	}
+	return []ECommon.UIDRange{{Start: androidTetheringDNSUID, End: androidTetheringDNSUID}}
+}
+
 func (i *Inbound) Start(stage adapter.StartStage) error {
 	switch stage {
 	case adapter.StartStateInitialize:
 		policy := i.policy
-		policy.EnableBypassCIDR = len(i.bypassRuleSet) > 0
-		backend, err := ECommon.Prepare("", i.listenPort,
+		policy.EnableBypassCIDR = true
+		backend, err := ECommon.Prepare(i.cgroupPath, i.listenPort,
 			i.enableTCP, i.enableUDP, i.redirectIPv4, i.redirectIPv6, policy)
 		if err != nil {
 			return err
@@ -259,31 +298,42 @@ func (i *Inbound) Start(stage adapter.StartStage) error {
 			if backend.IsClosed() {
 				i.setBackend(nil)
 			}
-			return E.Errors(err, E.Cause(closeErr, "close eBPF backend"))
+			if closeErr != nil {
+				closeErr = E.Cause(closeErr, "close eBPF backend")
+			}
+			return E.Errors(err, closeErr)
 		}
 		i.protectRegistered = true
+		if i.sharedOptions.Enabled {
+			i.sharedNetwork = newSharedNetwork(i, i.sharedOptions)
+		}
 	case adapter.StartStateStart:
 		backend := i.backendInstance()
 		if backend == nil {
 			return E.New("eBPF backend is not initialized")
 		}
 		if err := i.startBypassRuleSets(); err != nil {
-			return E.Errors(
+			return combineStartError(
 				E.Cause(err, "initialize eBPF bypass_rule_set"),
-				E.Cause(i.cleanupStartFailure(), "cleanup eBPF inbound"),
+				i.cleanupStartFailure(),
 			)
 		}
 		if err := i.setupLocalRoutes(); err != nil {
-			return E.Errors(
+			return combineStartError(
 				E.Cause(err, "configure eBPF redirect routes"),
-				E.Cause(i.cleanupStartFailure(), "cleanup eBPF inbound"),
+				i.cleanupStartFailure(),
 			)
 		}
 		if err := i.startListeners(); err != nil {
-			return E.Errors(err, E.Cause(i.cleanupStartFailure(), "cleanup eBPF inbound"))
+			return combineStartError(err, i.cleanupStartFailure())
+		}
+		if i.sharedNetwork != nil {
+			if err := i.sharedNetwork.Start(backend); err != nil {
+				return combineStartError(err, i.cleanupStartFailure())
+			}
 		}
 		if err := backend.Attach(); err != nil {
-			return E.Errors(err, E.Cause(i.cleanupStartFailure(), "cleanup eBPF inbound"))
+			return combineStartError(err, i.cleanupStartFailure())
 		}
 		i.startRuntimeStatsMonitor(backend)
 		bypassIPv4Count, bypassIPv6Count := backend.BypassCIDRCount()
@@ -299,12 +349,30 @@ func (i *Inbound) Start(stage adapter.StartStage) error {
 	return nil
 }
 
+func combineStartError(startErr error, cleanupErr error) error {
+	if cleanupErr == nil {
+		return startErr
+	}
+	return E.Errors(startErr, E.Cause(cleanupErr, "cleanup eBPF inbound"))
+}
+
 func (i *Inbound) Close() error {
 	i.closeAccess.Lock()
 	defer i.closeAccess.Unlock()
 	i.stopRuntimeStatsMonitor()
 	i.udpNat.Purge()
 	i.stopBypassRuleSets()
+	var sharedErr error
+	if i.sharedNetwork != nil {
+		sharedErr = i.sharedNetwork.Close()
+		if !i.sharedNetwork.IsClosed() {
+			if sharedErr == nil {
+				sharedErr = E.New("shared-network eBPF backend remained open after close")
+			}
+			return sharedErr
+		}
+		i.sharedNetwork = nil
+	}
 	backend := i.backendInstance()
 	var backendErr error
 	if backend != nil {
@@ -318,7 +386,7 @@ func (i *Inbound) Close() error {
 		i.setBackend(nil)
 	}
 	i.unregisterSocketProtector()
-	return E.Errors(backendErr, i.closeListeners(), i.removeLocalRoutes())
+	return E.Errors(sharedErr, backendErr, i.closeListeners(), i.removeLocalRoutes())
 }
 
 func (i *Inbound) startListeners() error {
@@ -351,6 +419,17 @@ func (i *Inbound) cleanupStartFailure() error {
 	i.stopRuntimeStatsMonitor()
 	i.udpNat.Purge()
 	i.stopBypassRuleSets()
+	var sharedErr error
+	if i.sharedNetwork != nil {
+		sharedErr = i.sharedNetwork.Close()
+		if !i.sharedNetwork.IsClosed() {
+			if sharedErr == nil {
+				sharedErr = E.New("shared-network eBPF backend remained open after close")
+			}
+			return sharedErr
+		}
+		i.sharedNetwork = nil
+	}
 	backend := i.backendInstance()
 	var backendErr error
 	if backend != nil {
@@ -364,7 +443,7 @@ func (i *Inbound) cleanupStartFailure() error {
 		i.setBackend(nil)
 	}
 	i.unregisterSocketProtector()
-	return E.Errors(backendErr, i.closeListeners(), i.removeLocalRoutes())
+	return E.Errors(sharedErr, backendErr, i.closeListeners(), i.removeLocalRoutes())
 }
 
 func (i *Inbound) backendInstance() *ECommon.Backend {
@@ -399,9 +478,6 @@ func (i *Inbound) unregisterSocketProtector() {
 }
 
 func (i *Inbound) startBypassRuleSets() error {
-	if len(i.bypassRuleSet) == 0 {
-		return nil
-	}
 	i.bypassRuleSetAccess.Lock()
 	defer i.bypassRuleSetAccess.Unlock()
 	if i.bypassRuleSetStarted {
@@ -422,7 +498,7 @@ func (i *Inbound) startBypassRuleSets() error {
 		return err
 	}
 	if updated {
-		i.logBypassRuleSetUpdate()
+		i.logBypassCIDRUpdate()
 	}
 	return nil
 }
@@ -462,12 +538,12 @@ func (i *Inbound) updateBypassRuleSet(adapter.RuleSet) {
 		return
 	}
 	if updated {
-		i.logBypassRuleSetUpdate()
+		i.logBypassCIDRUpdate()
 	}
 }
 
 func (i *Inbound) refreshBypassRuleSetsLocked(warnEmpty bool) (bool, error) {
-	var prefixes []netip.Prefix
+	prefixes := i.localInterfacePrefixes()
 	for _, ruleSet := range i.bypassRuleSet {
 		ipSets := ruleSet.ExtractIPSet()
 		if warnEmpty && len(ipSets) == 0 {
@@ -484,7 +560,36 @@ func (i *Inbound) refreshBypassRuleSetsLocked(warnEmpty bool) (bool, error) {
 	return backend.UpdateBypassCIDR(prefixes)
 }
 
-func (i *Inbound) logBypassRuleSetUpdate() {
+func (i *Inbound) localInterfacePrefixes() []netip.Prefix {
+	return localInterfacePrefixes(i.networkManager.InterfaceFinder().Interfaces())
+}
+
+func localInterfacePrefixes(interfaces []control.Interface) []netip.Prefix {
+	var prefixes []netip.Prefix
+	for _, networkInterface := range interfaces {
+		for _, prefix := range networkInterface.Addresses {
+			if !prefix.IsValid() {
+				continue
+			}
+			prefix = prefix.Masked()
+			address := prefix.Addr().Unmap()
+			prefixBits := prefix.Bits()
+			if prefix.Addr().Is4In6() {
+				if prefixBits < 96 {
+					continue
+				}
+				prefixBits -= 96
+			}
+			if address.IsUnspecified() || address.IsLoopback() {
+				continue
+			}
+			prefixes = append(prefixes, netip.PrefixFrom(address, prefixBits).Masked())
+		}
+	}
+	return prefixes
+}
+
+func (i *Inbound) logBypassCIDRUpdate() {
 	backend := i.backendInstance()
 	if backend == nil {
 		return
@@ -495,6 +600,19 @@ func (i *Inbound) logBypassRuleSetUpdate() {
 
 func (i *Inbound) InterfaceUpdated() {
 	i.udpNat.Purge()
+	i.bypassRuleSetAccess.Lock()
+	if i.bypassRuleSetStarted {
+		updated, err := i.refreshBypassRuleSetsLocked(false)
+		if err != nil {
+			i.logger.Error("refresh eBPF local interface bypass: ", err)
+		} else if updated {
+			i.logBypassCIDRUpdate()
+		}
+	}
+	i.bypassRuleSetAccess.Unlock()
+	if i.sharedNetwork != nil {
+		i.sharedNetwork.InterfaceUpdated()
+	}
 }
 
 func (i *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {

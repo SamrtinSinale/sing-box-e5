@@ -117,6 +117,20 @@ struct sb_ebpf_inbound_runtime {
     uint32_t attached_programs;
 };
 
+struct sb_ebpf_shared_network_runtime {
+    int control_map_fd;
+    int original_to_token_map_fd;
+    int token_to_original_map_fd;
+    int redirect_map_fd;
+    int host_ipv4_map_fd;
+    int host_ipv6_map_fd;
+    int fallback_bypass_ipv4_map_fd;
+    int fallback_bypass_ipv6_map_fd;
+    int scratch_map_fd;
+    int ingress_prog_fd;
+    int egress_prog_fd;
+};
+
 int sb_ebpf_inbound_prepare(
     const char *cgroup_path,
     uint16_t listen_port,
@@ -134,6 +148,20 @@ int sb_ebpf_inbound_prepare(
     struct sb_ebpf_inbound_runtime *runtime);
 int sb_ebpf_inbound_attach(struct sb_ebpf_inbound_runtime *runtime);
 int sb_ebpf_inbound_close(struct sb_ebpf_inbound_runtime *runtime);
+
+int sb_ebpf_load_shared_network_programs(
+    const uint8_t *object,
+    size_t object_size,
+    int bypass_ipv4_map_fd,
+    int bypass_ipv6_map_fd,
+    struct sb_ebpf_shared_network_runtime *runtime);
+int sb_ebpf_shared_network_prepare(
+    const uint8_t *object,
+    size_t object_size,
+    int bypass_ipv4_map_fd,
+    int bypass_ipv6_map_fd,
+    struct sb_ebpf_shared_network_runtime *runtime);
+int sb_ebpf_shared_network_close(struct sb_ebpf_shared_network_runtime *runtime);
 
 int sb_ebpf_create_map(
     enum bpf_map_type type,

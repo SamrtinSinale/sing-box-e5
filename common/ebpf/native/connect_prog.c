@@ -1071,8 +1071,38 @@ static void emit_ipv4_destination_bypass(
 
     emit(builder, BPF_MOV64_REG(BPF_REG_2, BPF_REG_7));
     emit(builder, BPF_ENDIAN_OP(BPF_REG_2, 32));
-    emit(builder, BPF_ALU64_IMM_OP(BPF_AND, BPF_REG_2, 0xff000000U));
-    bypass_jumps[(*bypass_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_2, 0x7f000000U, 0));
+    emit(builder, BPF_MOV64_REG(BPF_REG_3, BPF_REG_2));
+    emit(builder, BPF_ALU64_IMM_OP(BPF_RSH, BPF_REG_3, 24));
+    bypass_jumps[(*bypass_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_3, 0, 0));
+    bypass_jumps[(*bypass_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_3, 127, 0));
+    bypass_jumps[(*bypass_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JGE, BPF_REG_3, 224, 0));
+}
+
+static void emit_udp_system_service_bypass(
+    struct bpf_builder *builder,
+    uint8_t protocol,
+    bool protocol_from_context,
+    int port_reg,
+    size_t *bypass_jumps,
+    size_t *bypass_jump_count) {
+    size_t not_udp = 0;
+    if (protocol_from_context) {
+        emit(builder, BPF_LDX_MEM(BPF_W, BPF_REG_2, BPF_REG_6, offsetof(struct bpf_sock_addr, protocol)));
+        not_udp = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JNE, BPF_REG_2, SB_EBPF_PROTO_UDP, 0));
+    } else if (protocol != SB_EBPF_PROTO_UDP) {
+        return;
+    }
+    bypass_jumps[(*bypass_jump_count)++] =
+        emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, port_reg, htons(67), 0));
+    bypass_jumps[(*bypass_jump_count)++] =
+        emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, port_reg, htons(68), 0));
+    bypass_jumps[(*bypass_jump_count)++] =
+        emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, port_reg, htons(546), 0));
+    bypass_jumps[(*bypass_jump_count)++] =
+        emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, port_reg, htons(547), 0));
+    if (protocol_from_context) {
+        patch_jump(builder, not_udp, builder->count);
+    }
 }
 
 static void emit_ipv4_mapped_ipv6_check_jumps(
@@ -1101,6 +1131,12 @@ static void emit_ipv6_destination_bypass(
     bypass_jumps[(*bypass_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_3, 0, 0));
     bypass_jumps[(*bypass_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_3, 1, 0));
     patch_jump(builder, not_zero_or_loopback, builder->count);
+
+    emit(builder, BPF_MOV64_REG(BPF_REG_2, BPF_REG_7));
+    emit(builder, BPF_ENDIAN_OP(BPF_REG_2, 32));
+    emit(builder, BPF_ALU64_IMM_OP(BPF_RSH, BPF_REG_2, 24));
+    bypass_jumps[(*bypass_jump_count)++] =
+        emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_2, 0xff, 0));
 
 }
 
@@ -1587,6 +1623,8 @@ static int build_ipv4_sock_addr_prog(
         &b, include_uid_map_fd, exclude_uid_map_fd, bypass_jumps, &bypass_jump_count);
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_7, BPF_REG_6, offsetof(struct bpf_sock_addr, user_ip4)));
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_8, BPF_REG_6, offsetof(struct bpf_sock_addr, user_port)));
+    emit_udp_system_service_bypass(
+        &b, protocol, protocol_from_context, BPF_REG_8, bypass_jumps, &bypass_jump_count);
     // Connected UDP send() may not hit UDP_SENDMSG on Android kernels, so CONNECT must continue interception.
     // This can expose the redirect peer via getpeername(), but it avoids direct UDP leakage.
     if (attach_type == BPF_CGROUP_INET4_CONNECT && protocol_from_context) {
@@ -1679,6 +1717,8 @@ static int build_ipv6_sock_addr_prog(
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_9, BPF_REG_6, offsetof(struct bpf_sock_addr, user_ip6) + 8));
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_4, BPF_REG_6, offsetof(struct bpf_sock_addr, user_ip6) + 12));
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_5, BPF_REG_6, offsetof(struct bpf_sock_addr, user_port)));
+    emit_udp_system_service_bypass(
+        &b, protocol, protocol_from_context, BPF_REG_5, bypass_jumps, &bypass_jump_count);
     if (attach_type == BPF_CGROUP_UDP6_SENDMSG && protocol == SB_EBPF_PROTO_UDP && !protocol_from_context) {
         emit_udp_connected_token_restore_v6(
             &b, udp_token_map_fd, listen_port, allow_jumps, &allow_jump_count);
@@ -1815,6 +1855,8 @@ static int build_ipv4_mapped_ipv6_sock_addr_prog(
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_9, BPF_REG_6, offsetof(struct bpf_sock_addr, user_ip6) + 8));
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_4, BPF_REG_6, offsetof(struct bpf_sock_addr, user_ip6) + 12));
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_5, BPF_REG_6, offsetof(struct bpf_sock_addr, user_port)));
+    emit_udp_system_service_bypass(
+        &b, protocol, protocol_from_context, BPF_REG_5, bypass_jumps, &bypass_jump_count);
     if (attach_type == BPF_CGROUP_UDP6_SENDMSG && protocol == SB_EBPF_PROTO_UDP && !protocol_from_context) {
         emit_udp_connected_token_restore_v6(
             &b, udp_token_map_fd, listen_port, allow_jumps, &allow_jump_count);

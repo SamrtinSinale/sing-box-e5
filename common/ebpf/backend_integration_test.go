@@ -48,6 +48,38 @@ func TestBackendProgramLoadIntegration(t *testing.T) {
 		t.Fatalf("new eBPF backend has non-zero runtime stats: %+v", stats)
 	}
 
+	sharedBackend, err := PrepareSharedNetwork(
+		backend,
+		65531,
+		true,
+		true,
+		netip.MustParsePrefix("127.128.0.0/9"),
+		netip.MustParsePrefix("fd53:696e:672d:626f::/64"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := sharedBackend.Close(); err != nil {
+			t.Errorf("close shared-network token backend: %v", err)
+		}
+	})
+	if sharedBackend.IngressProgramFD() < 0 || sharedBackend.EgressProgramFD() < 0 {
+		t.Fatal("shared-network token programs were not loaded")
+	}
+	if err = sharedBackend.UpdateHostAddresses([]netip.Addr{
+		netip.MustParseAddr("192.0.2.1"),
+		netip.MustParseAddr("2001:db8::1"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = sharedBackend.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	if err = sharedBackend.Disable(); err != nil {
+		t.Fatal(err)
+	}
+
 	if os.Getenv("SING_BOX_EBPF_INTEGRATION_ATTACH") == "1" {
 		if err = backend.Attach(); err != nil {
 			t.Fatal(err)

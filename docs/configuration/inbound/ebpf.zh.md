@@ -4,8 +4,10 @@ icon: material/lan-connect
 
 # eBPF
 
-eBPF 入站通过 cgroup socket-address 程序拦截本机产生的 TCP 和 UDP 流量，
-不使用 TUN、TProxy、TC、iptables 或 SOCKS 中间层。
+eBPF 入站通过 cgroup socket-address 程序拦截本机产生的 TCP 和 UDP 流量。
+可选的 `shared_network` 模式使用 TC 令牌改写代理来自指定下游接口的转发流量；
+不使用 TUN、TProxy、iptables、skb mark、策略路由、loopback TC、socket assignment
+或 SOCKS 中间层。
 
 此入站用于以 root 权限直接运行 Android 或 Linux 原生 sing-box 二进制的场景。
 构建时必须启用 cgo 和 `with_ebpf` 构建标签。
@@ -20,6 +22,7 @@ eBPF 入站通过 cgroup socket-address 程序拦截本机产生的 TCP 和 UDP 
   ... // 监听字段
 
   "network": "",
+  "cgroup_path": "",
   "redirect_address": [
     "127.128.0.0/9",
     "fd53:696e:672d:626f::/64"
@@ -30,7 +33,11 @@ eBPF 入站通过 cgroup socket-address 程序拦截本机产生的 TCP 和 UDP 
   "include_uid": [],
   "include_uid_range": [],
   "exclude_uid": [],
-  "exclude_uid_range": []
+  "exclude_uid_range": [],
+  "shared_network": {
+    "enabled": false,
+    "include_interface": []
+  }
 }
 ```
 
@@ -66,6 +73,15 @@ loopback 接口交付。
 
 未被 `network` 选中的协议会绕过 eBPF 入站。
 
+`shared_network` 必须启用 UDP，因为开启该模式后热点 DNS 由代理处理。
+
+#### cgroup_path
+
+需要拦截其本机流量的 cgroup v2 层级绝对路径。留空时，sing-box 自动发现
+cgroup2 挂载点并使用其根层级。在标准 Linux 上，如不希望拦截系统全部本机流量，
+可把指定服务放入专用 cgroup 并配置此路径。此字段不限制 `shared_network`
+选中的转发流量。
+
 #### include_uid
 
 需要拦截的进程 UID 列表。
@@ -82,6 +98,9 @@ loopback 接口交付。
 需要绕过的进程 UID 列表。
 
 exclude 规则的优先级高于 include 规则。
+
+在 Android 上始终自动排除 UID `1052`（`dns_tether`），避免平台热点 DNS 服务
+和热点客户端的回包进入本机 cgroup 重定向；此排除不依赖 `shared_network`。
 
 #### exclude_uid_range
 
@@ -130,7 +149,7 @@ socket 按 IPv4 处理。
 复用已有 map 条目。TCP 和已连接 UDP 还会把 socket `SO_COOKIE` 混入令牌，避免
 发往同一目的地的并发 socket 错误共享生命周期状态。
 
-redirect map 不会淘汰或覆盖已有条目。令牌冲突时最多执行四次确定性探测；map
+redirect map 不会淘汰或覆盖已有条目。令牌冲突时最多执行八次确定性探测；map
 容量耗尽时会拒绝新流量，而不会将其错误路由到其他目的地。较大的前缀可使热路径
 通常只需一次探测。默认值使用 IPv4 回环范围中较少被显式使用的后半段，同时保留
 23 位令牌空间；IPv6 示例使用 sing-box 专用的 ULA 前缀。自定义前缀不得与设备
@@ -146,17 +165,52 @@ sing-box 会在当前网络命名空间中，通过 loopback 接口为每个配�
 `RTN_LOCAL` 路由。若已有本地路由能够覆盖该前缀则直接复用；关闭时只删除由
 当前入站创建的路由。
 
-除 `bypass_rule_set` 外，配置不包含私网、网卡或 DNS 策略。sing-box 从
-`/proc/self/mountinfo` 自动找到 cgroup2 根挂载点，并在该层拦截本机应用
-流量；回环流量始终保持本地直连。
+本机 cgroup 路径始终绕过未指定、回环、多播以及当前本机接口网段，并在网络变化
+后刷新这些网段。UDP 端口 67、68、546 和 547 也始终绕过。因此，只开启 eBPF
+入站而不开启 `shared_network` 时，不会挂载 TC、修改 `route_localnet`、代理热点
+客户端，也不会干扰热点 DHCP/DNS。
 
 同一 cgroup 层级同时只能由一个 eBPF 入站管理。sing-box 会在入站生命周期内
-独占锁定 cgroup2 根目录。只有成功取得该锁后，才会清理由异常退出遗留的
+独占锁定配置的 cgroup 目录。只有成功取得该锁后，才会清理由异常退出遗留的
 sing-box eBPF 程序，因此启动第二个实例不会卸载仍在运行的实例所挂载的程序。
 
 sing-box 会把自身创建的 socket 的 `SO_COOKIE` 登记到 eBPF LRU map。cgroup
 程序在重定向前查询此 map，从而避免 sing-box 的出站连接和 UDP listener
 再次被捕获。
+
+#### shared_network
+
+用于热点或其他共享下游网络的可选转发代理。关闭或省略时，不会创建共享 listener、
+`clsact` qdisc、TC filter 或修改 sysctl。
+
+启用后，`include_interface` 必须列出一个或多个 Ethernet-like 下游接口。不要选择
+`lo`、上游接口或 TUN、WireGuard、PPP、IPIP 等纯三层设备。接口可以在启动时尚未
+出现；此时 eBPF 入站会正常启动并等待，不启用 shared 数据面。已挂载的接口消失后，
+sing-box 会卸载其状态，同时保持本机 eBPF 入站运行；同名接口重新出现后会自动重新
+挂载。sing-box 会在网络变化后及每三秒重新同步接口列表。
+
+对于每个已出现的接口，sing-box 先挂载 egress filter，再挂载 ingress filter，全部
+就绪后才启用数据面。Ingress 把选中的 TCP/UDP 数据包目标地址和端口改写为逐流令牌
+及随机 sing-box listener 端口，egress 则在回包上恢复原始源地址。原目标查询键包含
+客户端地址和端口，不同热点客户端不会错误共享流状态。
+
+DHCP 端口 67、68、546 和 547 始终绕过 TC。目标端口 53 会在本机地址、私网及
+`bypass_rule_set` 判断之前被捕获，包括发给热点网关的 DNS 查询。其他本机、私网、
+链路本地、多播和已配置绕过 CIDR 仍走普通转发路径。
+
+IPv4 令牌使用配置的回环重定向前缀。仅当
+`net.ipv4.conf.<interface>.route_localnet` 原值为关闭时，sing-box 才会临时启用，
+并在 ingress、egress filter 都卸载后恢复；原本已启用的值不会被修改。IPv6 使用
+配置的 ULA 令牌前缀及此入站管理的本地路由。
+
+实现会创建或复用 `clsact`，关闭时不会删除它，因此其他 TC filter 保持不变。
+使用 TC 优先级 `10`、ingress handle `0x5342` 和 egress handle `0x5343`。绕过流量
+返回 `TC_ACT_PIPE` 以继续后续 filter，被捕获流量返回 `TC_ACT_OK`。数字更小的
+优先级仍会先执行；sing-box 不会替换占用上述 handle 的其他 filter。
+
+系统仍负责创建热点或 bridge、IP forwarding、NAT、DHCP，以及 `shared_network`
+关闭时使用的 DNS 服务。绕过 Linux TC 的硬件热点卸载无法代理；应在每种 Android
+内核上验证实际下游接口及双向流量。
 
 ## 构建
 
@@ -176,15 +230,20 @@ make build
 CGO_ENABLED=1 \
 GOOS=android \
 GOARCH=arm64 \
-CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang" \
+CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android33-clang" \
 TAGS="$(cat release/DEFAULT_BUILD_TAGS_OTHERS),with_ebpf" \
 make build
 ```
 
+当 `TAGS` 包含 `with_ebpf` 时，`make build` 会先使用 `-target bpfel` 编译 TC
+程序，因此需要支持 BPF 后端的 Clang 和 Linux UAPI 头文件。生成的对象文件由 Git
+忽略，不属于源码树内容。
+
 设备内核必须提供 cgroup2，以及配置的地址族和 `network` 所需的 cgroup
 attach type：connect4/connect6；启用 UDP 时还需要 UDP4/UDP6 sendmsg、recvmsg
 和 `BPF_CGROUP_INET_SOCK_RELEASE`。进程需要创建并挂载 BPF map/program 以及
-管理本地路由的权限。
+管理本地路由的权限。`shared_network` 还需要 sched_cls TC、`clsact`、IPv4 下可写
+的逐接口 `route_localnet` 和 `CAP_NET_ADMIN`。
 
 ## 鸣谢
 

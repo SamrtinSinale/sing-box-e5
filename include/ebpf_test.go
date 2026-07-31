@@ -87,3 +87,28 @@ func TestEBPFInboundRedirectAddresses(t *testing.T) {
 		t.Fatalf("unexpected bypass rule-set: %v", ebpfOptions.BypassRuleSet)
 	}
 }
+
+func TestEBPFInboundSharedNetworkOptions(t *testing.T) {
+	ctx := Context(context.Background())
+	var inboundOptions option.Inbound
+	if err := json.UnmarshalContext(ctx, []byte(`{
+		"type": "ebpf",
+		"cgroup_path": "/sys/fs/cgroup/test.slice",
+		"shared_network": {
+			"enabled": true,
+			"include_interface": ["wlan2"]
+		}
+	}`), &inboundOptions); err != nil {
+		t.Fatal(err)
+	}
+	ebpfOptions, loaded := inboundOptions.Options.(*option.EBPFInboundOptions)
+	if !loaded {
+		t.Fatalf("unexpected eBPF options type: %T", inboundOptions.Options)
+	}
+	if ebpfOptions.CgroupPath != "/sys/fs/cgroup/test.slice" ||
+		!ebpfOptions.SharedNetwork.Enabled ||
+		len(ebpfOptions.SharedNetwork.IncludeInterface) != 1 ||
+		ebpfOptions.SharedNetwork.IncludeInterface[0] != "wlan2" {
+		t.Fatalf("unexpected eBPF shared-network options: %+v", ebpfOptions)
+	}
+}

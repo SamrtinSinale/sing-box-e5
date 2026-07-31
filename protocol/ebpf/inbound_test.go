@@ -4,12 +4,15 @@ package ebpf
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
+	"slices"
 	"testing"
 	"unsafe"
 
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing/common/control"
 	"github.com/sagernet/sing/common/json/badoption"
 
 	"golang.org/x/sys/unix"
@@ -25,6 +28,18 @@ func TestNormalizeListenOptionsDefaults(t *testing.T) {
 	}
 	if options.ListenPort != defaultListenPort {
 		t.Fatalf("unexpected listen port: %d", options.ListenPort)
+	}
+}
+
+func TestCombineStartError(t *testing.T) {
+	startErr := errors.New("start failed")
+	if result := combineStartError(startErr, nil); result != startErr {
+		t.Fatalf("expected the original start error, got %v", result)
+	}
+	cleanupErr := errors.New("cleanup failed")
+	result := combineStartError(startErr, cleanupErr)
+	if !errors.Is(result, startErr) || !errors.Is(result, cleanupErr) {
+		t.Fatalf("expected both errors to be retained, got %v", result)
 	}
 }
 
@@ -83,6 +98,31 @@ func TestNormalizeListenOptionsRejectsNonLoopbackBindInterface(t *testing.T) {
 	_, err := normalizeListenOptions(option.ListenOptions{BindInterface: "wlan0"})
 	if err == nil {
 		t.Fatal("expected a non-loopback bind_interface to be rejected")
+	}
+}
+
+func TestNormalizeCgroupPath(t *testing.T) {
+	for _, test := range []struct {
+		input  string
+		output string
+	}{
+		{"", ""},
+		{"/sys/fs/cgroup", "/sys/fs/cgroup"},
+		{"/sys/fs/cgroup/user.slice/../system.slice", "/sys/fs/cgroup/system.slice"},
+	} {
+		output, err := normalizeCgroupPath(test.input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if output != test.output {
+			t.Fatalf("unexpected normalized cgroup path: %q", output)
+		}
+	}
+}
+
+func TestNormalizeCgroupPathRejectsRelativePath(t *testing.T) {
+	if _, err := normalizeCgroupPath("user.slice/test.scope"); err == nil {
+		t.Fatal("expected a relative cgroup path to be rejected")
 	}
 }
 
@@ -157,6 +197,35 @@ func TestNormalizeRedirectAddressesRejectsInvalid(t *testing.T) {
 	}
 }
 
+func TestLocalInterfacePrefixes(t *testing.T) {
+	interfaces := []control.Interface{
+		{
+			Name: "lo",
+			Addresses: []netip.Prefix{
+				netip.MustParsePrefix("127.0.0.1/8"),
+				netip.MustParsePrefix("::1/128"),
+			},
+		},
+		{
+			Name: "ap0",
+			Addresses: []netip.Prefix{
+				netip.MustParsePrefix("192.168.96.221/24"),
+				netip.MustParsePrefix("fe80::1/64"),
+				netip.MustParsePrefix("::ffff:192.168.97.1/120"),
+			},
+		},
+	}
+	prefixes := localInterfacePrefixes(interfaces)
+	expected := []netip.Prefix{
+		netip.MustParsePrefix("192.168.96.0/24"),
+		netip.MustParsePrefix("fe80::/64"),
+		netip.MustParsePrefix("192.168.97.0/24"),
+	}
+	if !slices.Equal(prefixes, expected) {
+		t.Fatalf("unexpected local interface prefixes: %v", prefixes)
+	}
+}
+
 func TestParseUIDRanges(t *testing.T) {
 	ranges, err := parseUIDRanges([]uint32{0, 1000}, []string{"1001:99999", "0xffffffff:0xffffffff"})
 	if err != nil {
@@ -178,6 +247,16 @@ func TestParseUIDRangesRejectsInvalid(t *testing.T) {
 		if _, err := parseUIDRanges(nil, []string{uidRange}); err == nil {
 			t.Fatalf("expected UID range to be rejected: %s", uidRange)
 		}
+	}
+}
+
+func TestPlatformExcludedUIDRanges(t *testing.T) {
+	if ranges := platformExcludedUIDRanges("linux"); len(ranges) != 0 {
+		t.Fatalf("unexpected Linux platform exclusions: %+v", ranges)
+	}
+	ranges := platformExcludedUIDRanges("android")
+	if len(ranges) != 1 || ranges[0].Start != androidTetheringDNSUID || ranges[0].End != androidTetheringDNSUID {
+		t.Fatalf("unexpected Android platform exclusions: %+v", ranges)
 	}
 }
 
