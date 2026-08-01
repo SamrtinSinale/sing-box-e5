@@ -27,7 +27,10 @@ include implementation files from `native/`:
 
 - `native/cgroup.c` contains the shared cgroup definitions and includes the
   program and runtime implementation in one cgo translation unit.
-- `native/cgroup_program.c` generates and loads the cgroup instructions.
+- `native/cgroup_program.c` selects and loads cgroup programs. Its
+  `cgroup_program_*.c` fragments separate generic instruction emission, UDP
+  state, redirect policy, socket-address builders, and recvmsg/socket-release
+  builders while retaining one cgo translation unit.
 - `native/cgroup_runtime.c` creates the cgroup maps and manages prepare,
   attach, and close operations.
 - `native/shared_network.bpf.c` is compiled to the embedded
