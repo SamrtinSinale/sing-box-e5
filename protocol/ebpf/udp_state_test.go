@@ -3,9 +3,14 @@
 package ebpf
 
 import (
+	"bytes"
+	"net"
 	"net/netip"
 	"sync"
 	"testing"
+
+	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 )
 
 func TestUDPClientTableBindings(t *testing.T) {
@@ -19,8 +24,8 @@ func TestUDPClientTableBindings(t *testing.T) {
 	if !loaded {
 		t.Fatal("client state was not created")
 	}
-	if actual, loaded := clientState.redirectAddress(destination); !loaded || actual != redirectAddress {
-		t.Fatalf("unexpected redirect binding: %v, %v", actual, loaded)
+	if actual, loaded := clientState.redirectBinding(destination); !loaded || actual.address != redirectAddress {
+		t.Fatalf("unexpected redirect binding: %v, %v", actual.address, loaded)
 	}
 	clientState.setConnected(true)
 	if !clientState.isConnected() {
@@ -33,6 +38,77 @@ func TestUDPClientTableBindings(t *testing.T) {
 	if uid := clientState.sourceUID(); uid != 10002 {
 		t.Fatalf("source UID was not updated with the binding: %d", uid)
 	}
+}
+
+func TestUDPClientTableCachesPacketInfo(t *testing.T) {
+	testCases := []netip.Addr{
+		netip.MustParseAddr("127.128.0.9"),
+		netip.MustParseAddr("fd53:696e:672d:626f::9"),
+	}
+	for _, redirectAddress := range testCases {
+		t.Run(redirectAddress.String(), func(t *testing.T) {
+			var table udpClientTable
+			client := netip.MustParseAddrPort("127.0.0.1:9001")
+			destination := netip.AddrPortFrom(netip.MustParseAddr("1.1.1.1"), 53)
+			table.setBinding(client, destination, redirectAddress, false, 0)
+			clientState, _ := table.load(client)
+			binding, loaded := clientState.redirectBinding(destination)
+			if !loaded || len(binding.packetInfo) == 0 {
+				t.Fatal("source packet info was not cached")
+			}
+			var expectedPacketInfo []byte
+			if redirectAddress.Is4() {
+				expectedPacketInfo = (&ipv4.ControlMessage{Src: net.IP(redirectAddress.AsSlice())}).Marshal()
+			} else {
+				expectedPacketInfo = (&ipv6.ControlMessage{Src: net.IP(redirectAddress.AsSlice())}).Marshal()
+			}
+			if !bytes.Equal(binding.packetInfo, expectedPacketInfo) {
+				t.Fatal("cached packet info does not contain the redirect source")
+			}
+		})
+	}
+}
+
+func BenchmarkUDPClientTableCacheHit(b *testing.B) {
+	var table udpClientTable
+	client := netip.MustParseAddrPort("127.0.0.1:9001")
+	destination := netip.MustParseAddrPort("1.1.1.1:53")
+	redirectAddress := netip.MustParseAddr("127.128.0.9")
+	table.setBinding(client, destination, redirectAddress, false, 0)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		cached, loaded := table.cachedOriginal(client, redirectAddress)
+		if !loaded || cached.original.Destination != destination {
+			b.Fatal("cached original destination was lost")
+		}
+	}
+}
+
+var benchmarkPacketInfo []byte
+
+func BenchmarkUDPSourcePacketInfo(b *testing.B) {
+	redirectAddress := netip.MustParseAddr("127.128.0.9")
+	b.Run("marshal", func(b *testing.B) {
+		for range b.N {
+			benchmarkPacketInfo = sourcePacketInfo(redirectAddress)
+		}
+	})
+	b.Run("cached", func(b *testing.B) {
+		var table udpClientTable
+		client := netip.MustParseAddrPort("127.0.0.1:9001")
+		destination := netip.MustParseAddrPort("1.1.1.1:53")
+		table.setBinding(client, destination, redirectAddress, false, 0)
+		clientState, _ := table.load(client)
+		b.ResetTimer()
+		for range b.N {
+			binding, loaded := clientState.redirectBinding(destination)
+			if !loaded {
+				b.Fatal("redirect binding was lost")
+			}
+			benchmarkPacketInfo = binding.packetInfo
+		}
+	})
 }
 
 func TestUDPClientTableDeleteChecksGeneration(t *testing.T) {

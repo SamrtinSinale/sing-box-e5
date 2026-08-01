@@ -199,28 +199,25 @@ type udpPacketWriter struct {
 
 func (w *udpPacketWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
 	defer buffer.Release()
-	redirectAddress, loaded := w.clientState.redirectAddress(destination.AddrPort())
+	binding, loaded := w.clientState.redirectBinding(destination.AddrPort())
 	if !loaded {
 		return E.New("missing UDP redirect binding for ", destination)
 	}
 	var udpConn *net.UDPConn
-	var controlMessage []byte
-	if redirectAddress.Is4() {
+	if binding.address.Is4() {
 		listener4 := w.inbound.listeners.udp(false)
 		if listener4 == nil {
 			return E.New("IPv4 eBPF listener is unavailable")
 		}
 		udpConn = listener4.UDPConn()
-		controlMessage = (&ipv4.ControlMessage{Src: net.IP(redirectAddress.AsSlice())}).Marshal()
 	} else {
 		listener6 := w.inbound.listeners.udp(true)
 		if listener6 == nil {
 			return E.New("IPv6 eBPF listener is unavailable")
 		}
 		udpConn = listener6.UDPConn()
-		controlMessage = (&ipv6.ControlMessage{Src: net.IP(redirectAddress.AsSlice())}).Marshal()
 	}
-	_, _, err := udpConn.WriteMsgUDPAddrPort(buffer.Bytes(), controlMessage, w.client)
+	_, _, err := udpConn.WriteMsgUDPAddrPort(buffer.Bytes(), binding.packetInfo, w.client)
 	return err
 }
 

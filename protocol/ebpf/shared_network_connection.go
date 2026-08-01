@@ -14,9 +14,6 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
-
-	"golang.org/x/net/ipv4"
-	"golang.org/x/net/ipv6"
 )
 
 func (s *sharedNetwork) NewConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
@@ -123,27 +120,24 @@ func (w *sharedPacketWriter) WritePacket(buffer *buf.Buffer, destination M.Socks
 	defer buffer.Release()
 	w.sharedNetwork.lifecycleAccess.RLock()
 	defer w.sharedNetwork.lifecycleAccess.RUnlock()
-	tokenAddress, loaded := w.clientState.redirectAddress(destination.AddrPort())
+	binding, loaded := w.clientState.redirectBinding(destination.AddrPort())
 	if !loaded {
 		return E.New("missing shared-network UDP token for ", destination)
 	}
 	var udpConn *net.UDPConn
-	var controlMessage []byte
-	if tokenAddress.Is4() {
+	if binding.address.Is4() {
 		listener4 := w.sharedNetwork.listeners.udp(false)
 		if listener4 == nil {
 			return E.New("shared-network IPv4 UDP listener is unavailable")
 		}
 		udpConn = listener4.UDPConn()
-		controlMessage = (&ipv4.ControlMessage{Src: net.IP(tokenAddress.AsSlice())}).Marshal()
 	} else {
 		listener6 := w.sharedNetwork.listeners.udp(true)
 		if listener6 == nil {
 			return E.New("shared-network IPv6 UDP listener is unavailable")
 		}
 		udpConn = listener6.UDPConn()
-		controlMessage = (&ipv6.ControlMessage{Src: net.IP(tokenAddress.AsSlice())}).Marshal()
 	}
-	_, _, err := udpConn.WriteMsgUDPAddrPort(buffer.Bytes(), controlMessage, w.client)
+	_, _, err := udpConn.WriteMsgUDPAddrPort(buffer.Bytes(), binding.packetInfo, w.client)
 	return err
 }

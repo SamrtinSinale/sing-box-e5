@@ -3,10 +3,14 @@
 package ebpf
 
 import (
+	"net"
 	"net/netip"
 	"sync"
 
 	ECommon "github.com/sagernet/sing-box/common/ebpf"
+
+	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 )
 
 type udpClientTable struct {
@@ -26,6 +30,7 @@ type udpClientState struct {
 
 type udpRedirectBinding struct {
 	address    netip.Addr
+	packetInfo []byte
 	connected  bool
 	reference  udpRedirectReference
 	sharedFlow *ECommon.SharedNetworkFlowHandle
@@ -180,6 +185,7 @@ func (t *udpClientTable) setClientBinding(
 	}
 	clientState.bindings[destination] = udpRedirectBinding{
 		address:    redirectAddress,
+		packetInfo: sourcePacketInfo(redirectAddress),
 		connected:  connected,
 		reference:  reference,
 		sharedFlow: original.sharedFlow,
@@ -258,11 +264,18 @@ func (t *udpClientTable) releaseRedirectLocked(reference udpRedirectReference) b
 	return false
 }
 
-func (s *udpClientState) redirectAddress(destination netip.AddrPort) (netip.Addr, bool) {
+func (s *udpClientState) redirectBinding(destination netip.AddrPort) (udpRedirectBinding, bool) {
 	s.access.RLock()
 	binding, loaded := s.bindings[destination]
 	s.access.RUnlock()
-	return binding.address, loaded
+	return binding, loaded
+}
+
+func sourcePacketInfo(address netip.Addr) []byte {
+	if address.Is4() {
+		return (&ipv4.ControlMessage{Src: net.IP(address.AsSlice())}).Marshal()
+	}
+	return (&ipv6.ControlMessage{Src: net.IP(address.AsSlice())}).Marshal()
 }
 
 func (s *udpClientState) setConnected(connected bool) {
