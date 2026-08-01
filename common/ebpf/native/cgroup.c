@@ -101,6 +101,7 @@ static uint32_t ipv6_redirect_word(const uint8_t prefix[16], size_t offset) {
 
 static void init_runtime(struct sb_ebpf_cgroup_runtime *runtime) {
     memset(runtime, -1, sizeof(*runtime));
+    runtime->socket_release_supported = false;
     runtime->attached_programs = 0U;
 }
 
@@ -234,9 +235,9 @@ static void emit_dns_hijack_jumps(
         hijack_jump_count);
 }
 
-static int create_redirect_map(uint32_t max_entries) {
+static int create_redirect_map(uint32_t max_entries, bool use_lru) {
     return sb_ebpf_create_map(
-        (enum bpf_map_type)SB_EBPF_HASH_MAP_TYPE,
+        (enum bpf_map_type)(use_lru ? SB_EBPF_LRU_HASH_MAP_TYPE : SB_EBPF_HASH_MAP_TYPE),
         sizeof(struct sb_ebpf_listener_key),
         sizeof(struct sb_ebpf_original_dst),
         max_entries,
@@ -252,9 +253,9 @@ static int create_udp_peer_map(uint32_t max_entries) {
         0U);
 }
 
-static int create_udp_token_map(uint32_t max_entries) {
+static int create_udp_token_map(uint32_t max_entries, bool use_lru) {
     return sb_ebpf_create_map(
-        (enum bpf_map_type)SB_EBPF_HASH_MAP_TYPE,
+        (enum bpf_map_type)(use_lru ? SB_EBPF_LRU_HASH_MAP_TYPE : SB_EBPF_HASH_MAP_TYPE),
         sizeof(uint64_t),
         sizeof(struct sb_ebpf_listener_key),
         max_entries,
@@ -2167,6 +2168,29 @@ static int build_socket_release_prog(
         true);
 }
 
+static int probe_socket_release_support(void) {
+    const struct bpf_insn insns[] = {
+        BPF_MOV64_IMM(BPF_REG_0, 1),
+        BPF_EXIT_INSN(),
+    };
+    int fd = sb_ebpf_load_prog(
+        insns,
+        ARRAY_SIZE(insns),
+        "sb_rel_probe",
+        BPF_PROG_TYPE_CGROUP_SOCK,
+        BPF_CGROUP_INET_SOCK_RELEASE,
+        false);
+    if (fd >= 0) {
+        if (close(fd) != 0) return -1;
+        return 1;
+    }
+    if (errno == EINVAL || errno == ENOTSUP || errno == EOPNOTSUPP) {
+        errno = 0;
+        return 0;
+    }
+    return -1;
+}
+
 static int open_cgroup_path(const char *path) {
     const char *actual = path != NULL && path[0] != '\0' ? path : SB_EBPF_DEFAULT_CGROUP_PATH;
     return open(actual, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -2197,14 +2221,20 @@ int sb_ebpf_cgroup_prepare(
     }
 
     init_runtime(runtime);
+    int socket_release_support = enable_udp ? probe_socket_release_support() : 0;
+    if (socket_release_support < 0) {
+        goto prepare_fail;
+    }
+    runtime->socket_release_supported = socket_release_support > 0;
+    bool use_udp_lru_fallback = enable_udp && !runtime->socket_release_supported;
     runtime->tcp_redirect_map_fd = enable_tcp
-        ? create_redirect_map(tcp_redirect_map_capacity)
+        ? create_redirect_map(tcp_redirect_map_capacity, false)
         : -1;
     runtime->udp_redirect_map_fd = enable_udp
-        ? create_redirect_map(udp_redirect_map_capacity)
+        ? create_redirect_map(udp_redirect_map_capacity, use_udp_lru_fallback)
         : -1;
     runtime->udp_token_map_fd = enable_udp
-        ? create_udp_token_map(udp_redirect_map_capacity)
+        ? create_udp_token_map(udp_redirect_map_capacity, use_udp_lru_fallback)
         : -1;
     runtime->udp_peer_map_fd = enable_udp
         ? create_udp_peer_map(udp_redirect_map_capacity)
@@ -2412,7 +2442,7 @@ int sb_ebpf_cgroup_load_programs(
                 "sb_ebpf_ur6v4m");
         }
     }
-    if (enable_udp) {
+    if (enable_udp && runtime->socket_release_supported) {
         runtime->socket_release_prog_fd = build_socket_release_prog(
             runtime->udp_redirect_map_fd,
             runtime->udp_token_map_fd,
@@ -2433,7 +2463,8 @@ int sb_ebpf_cgroup_load_programs(
           (enable_udp &&
            (runtime->udp6_v4mapped_sendmsg_prog_fd < 0 ||
              runtime->udp6_v4mapped_recvmsg_prog_fd < 0)))) ||
-        (enable_udp && runtime->socket_release_prog_fd < 0)) {
+        (enable_udp && runtime->socket_release_supported &&
+         runtime->socket_release_prog_fd < 0)) {
         goto load_fail;
     }
     return 0;

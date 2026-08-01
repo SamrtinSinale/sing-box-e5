@@ -196,14 +196,15 @@ mix the socket `SO_COOKIE` into the token, preventing concurrent sockets to the
 same destination from sharing lifecycle state.
 
 TCP and UDP use separate redirect maps whose capacities are configured by
-`map_capacity`. The maps do not evict or overwrite entries. A token collision
-uses up to four deterministic probes, and a full map rejects the new flow
-instead of routing it to another destination. Large prefixes keep this lookup
-path close to one probe. The default uses the less commonly used upper half of
-the IPv4 loopback range while retaining 23 bits of token space. The IPv6
-example is a sing-box-specific ULA prefix. Before installing the local route,
-sing-box rejects a prefix that overlaps a non-loopback interface address or a
-non-default route in the main routing table.
+`map_capacity`. On kernels with cgroup socket-release support, the maps do not
+evict or overwrite entries. A token collision uses up to four deterministic
+probes, and a full map rejects the new flow instead of routing it to another
+destination. Large prefixes keep this lookup path close to one probe. The
+default uses the less commonly used upper half of the IPv4 loopback range
+while retaining 23 bits of token space. The IPv6 example is a sing-box-specific
+ULA prefix. Before installing the local route, sing-box rejects a prefix that
+overlaps a non-loopback interface address or a non-default route in the main
+routing table.
 
 Redirect entries are reclaimed according to their actual owners. A TCP entry
 is removed immediately after the listener consumes its original destination.
@@ -213,6 +214,13 @@ token by socket cookie and removes the redirect, token, and peer-cache entries
 from a cgroup socket-release program when the application socket closes. A UDP
 socket reconnect also removes the previous connected mapping before installing
 the replacement.
+
+On an older kernel without cgroup socket-release support, sing-box detects and
+skips that optional program at startup. The UDP redirect and socket-token maps
+then use an LRU compatibility mode so stale connected-UDP entries cannot
+permanently exhaust the maps. This mode emits one warning; under heavy map
+pressure it may evict an active UDP entry early. A TCP-only configuration does
+not probe or require socket-release.
 
 sing-box automatically installs an `RTN_LOCAL` route for each configured
 prefix through the loopback interface in the current network namespace. An
@@ -343,9 +351,10 @@ Verify the **effective kernel configuration on the target device** before use:
 
 - `CONFIG_BPF`, `CONFIG_BPF_SYSCALL`, `CONFIG_CGROUPS`, and
   `CONFIG_CGROUP_BPF` must be enabled, and a writable cgroup v2 must be
-  mounted. The kernel must also provide the cgroup connect, UDP
-  sendmsg/recvmsg, and socket-release attach types required by the
-  configuration. `CONFIG_BPF_JIT` is not functionally required, but is
+  mounted. The kernel must also provide the cgroup connect and UDP
+  sendmsg/recvmsg attach types required by the configuration. Socket-release
+  is used for exact cleanup when available and otherwise falls back to LRU
+  compatibility mode. `CONFIG_BPF_JIT` is not functionally required, but is
   strongly recommended on a router.
 - `shared_network` additionally needs `CONFIG_NET_SCHED`,
   `CONFIG_NET_SCH_INGRESS`, `CONFIG_NET_CLS_ACT`, and `CONFIG_NET_CLS_BPF`.
@@ -412,10 +421,12 @@ the generated object is ignored by Git and must not be committed.
 
 The device kernel must provide cgroup2 and the cgroup attach types required by
 the configured address families and `network`: connect4/connect6 and, for UDP,
-UDP4/UDP6 sendmsg and recvmsg plus `BPF_CGROUP_INET_SOCK_RELEASE`. The process
-needs permission to create and attach BPF maps/programs and to manage local
-routes. `shared_network` additionally requires sched_cls TC, `clsact`, writable
-per-interface `route_localnet` for IPv4, and `CAP_NET_ADMIN`.
+UDP4/UDP6 sendmsg and recvmsg. `BPF_CGROUP_INET_SOCK_RELEASE` is an optional UDP
+lifecycle optimization; its absence selects the LRU compatibility mode. The
+process needs permission to create and attach BPF maps/programs and to manage
+local routes. Only when enabled, `shared_network` additionally requires
+sched_cls TC, `clsact`, writable per-interface `route_localnet` for IPv4, and
+`CAP_NET_ADMIN`.
 
 ### Credits
 

@@ -329,6 +329,15 @@ func (b *CgroupBackend) AttachedPrograms() []string {
 	return programs
 }
 
+func (b *CgroupBackend) UsesSocketRelease() bool {
+	if b == nil {
+		return false
+	}
+	b.access.RLock()
+	defer b.access.RUnlock()
+	return b.runtime != nil && b.runtime.socket_release_prog_fd >= 0
+}
+
 func (b *CgroupBackend) LoadPrograms(listenerPort uint16) error {
 	if b == nil {
 		return errBackendClosed

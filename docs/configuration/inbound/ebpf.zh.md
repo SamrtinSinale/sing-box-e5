@@ -178,9 +178,10 @@ socket 按 IPv4 处理。
 复用已有 map 条目。TCP 和已连接 UDP 还会把 socket `SO_COOKIE` 混入令牌，避免
 发往同一目的地的并发 socket 错误共享生命周期状态。
 
-TCP 和 UDP 使用由 `map_capacity` 分别配置容量的 redirect map；这些 map 不会
-淘汰或覆盖已有条目。令牌冲突时最多执行四次确定性探测；map 容量耗尽时会拒绝
-新流量，而不会将其错误路由到其他目的地。较大的前缀可使热路径通常只需一次探测。
+TCP 和 UDP 使用由 `map_capacity` 分别配置容量的 redirect map。支持 cgroup
+socket-release 的内核不会淘汰或覆盖已有条目；令牌冲突时最多执行四次确定性探测，
+map 容量耗尽时会拒绝新流量，而不会将其错误路由到其他目的地。较大的前缀可使热路径
+通常只需一次探测。
 默认值使用 IPv4 回环范围中较少被显式使用的后半段，同时保留 23 位令牌空间；IPv6
 示例使用 sing-box 专用的 ULA 前缀。安装本地路由前，sing-box 会拒绝与非 loopback
 接口地址或主路由表中非默认路由重叠的前缀。
@@ -190,6 +191,11 @@ redirect 条目会按照实际所有者回收。TCP listener 读取原始目的�
 会话关闭时删除；已连接 UDP 以 socket cookie 保存 redirect 令牌，并在应用 socket
 关闭时由 cgroup socket-release 程序删除 redirect、令牌和 peer cache 条目。UDP
 socket 重新 connect 时，也会先删除此前的已连接映射再安装新映射。
+
+对于不支持 cgroup socket-release 的旧内核，sing-box 会在启动时自动探测并跳过该
+可选程序，同时对 UDP redirect 和 socket-token map 使用 LRU 兼容模式，避免陈旧的
+已连接 UDP 条目永久耗尽 map。该模式会记录一次警告；在 map 压力很高时，活跃 UDP
+条目可能被提前淘汰。TCP-only 配置不会探测或要求 socket-release。
 
 sing-box 会在当前网络命名空间中，通过 loopback 接口为每个配置前缀自动添加
 `RTN_LOCAL` 路由。若已有本地路由能够覆盖该前缀则直接复用；关闭时只删除由
@@ -287,8 +293,9 @@ cgroup 要求。OpenWrt 的通用内核配置通常关闭 `CONFIG_CGROUPS`，且
 
 - `CONFIG_BPF`、`CONFIG_BPF_SYSCALL`、`CONFIG_CGROUPS` 和
   `CONFIG_CGROUP_BPF` 已启用，并已挂载可写的 cgroup v2；内核还必须支持当前配置
-  所需的 cgroup connect、UDP sendmsg/recvmsg 和 socket-release attach type。
-  `CONFIG_BPF_JIT` 不是功能必需项，但路由器场景强烈建议启用。
+  所需的 cgroup connect 以及 UDP sendmsg/recvmsg attach type。socket-release
+  可用时会用于精确清理，不可用时自动回退到 LRU 兼容模式。`CONFIG_BPF_JIT`
+  不是功能必需项，但路由器场景强烈建议启用。
 - 使用 `shared_network` 时，还需要 `CONFIG_NET_SCHED`、
   `CONFIG_NET_SCH_INGRESS`、`CONFIG_NET_CLS_ACT` 和 `CONFIG_NET_CLS_BPF`。
   在常见 OpenWrt 版本中，这部分通常由 `kmod-sched-core` 和 `kmod-sched-bpf`
@@ -343,9 +350,10 @@ make build
 
 设备内核必须提供 cgroup2，以及配置的地址族和 `network` 所需的 cgroup
 attach type：connect4/connect6；启用 UDP 时还需要 UDP4/UDP6 sendmsg、recvmsg
-和 `BPF_CGROUP_INET_SOCK_RELEASE`。进程需要创建并挂载 BPF map/program 以及
-管理本地路由的权限。`shared_network` 还需要 sched_cls TC、`clsact`、IPv4 下可写
-的逐接口 `route_localnet` 和 `CAP_NET_ADMIN`。
+attach type。`BPF_CGROUP_INET_SOCK_RELEASE` 是可选的 UDP 生命周期优化；不支持时
+会使用 LRU 兼容模式。进程需要创建并挂载 BPF map/program 以及管理本地路由的权限。
+`shared_network` 仅在启用时额外要求 sched_cls TC、`clsact`、IPv4 下可写的逐接口
+`route_localnet` 和 `CAP_NET_ADMIN`。
 
 ### 鸣谢
 

@@ -104,6 +104,7 @@ struct sb_ebpf_cgroup_runtime {
     int udp6_recvmsg_prog_fd;
     int udp6_v4mapped_recvmsg_prog_fd;
     int socket_release_prog_fd;
+    bool socket_release_supported;
     uint32_t attached_programs;
 };
 

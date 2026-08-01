@@ -73,6 +73,11 @@ func (i *Inbound) Start(stage adapter.StartStage) error {
 		if err := backend.Attach(); err != nil {
 			return combineStartError(err, i.cleanupStartFailure())
 		}
+		if i.enableUDP && !backend.UsesSocketRelease() {
+			i.logger.Warn(
+				"cgroup socket-release is unavailable; using LRU cleanup fallback for UDP redirect state",
+			)
+		}
 		bypassIPv4Count, bypassIPv6Count := backend.BypassCIDRCount()
 		i.logger.Info(
 			"eBPF inbound attached: cgroup=", backend.CgroupPath(),

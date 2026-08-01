@@ -70,9 +70,9 @@ UID 包含/排除策略、Android `dns_tether` UID 1052 排除以及 DHCP 端口
 | 实现复杂度 | 内核程序较小，但令牌映射、UDP 生命周期和自定义加载器仍有维护成本 | eBPF 数据面非常复杂，具有连接状态、DNS/IP 映射、内核规则执行、netns 回注等模块 |
 | 性能优势 | 本机全代理场景入口更短；纯 CIDR 绕过后接近原生直连 | 直连占比较高的网关场景优势明显，丰富规则也能保持内核直连 |
 | 性能劣势 | 未下沉的 `direct` 流量仍需进入 sing-box，不能获得 dae 的内核直连优势 | 所有绑定接口流量都要经过按包 TC 分类；复杂数据面增加 verifier、map 和维护成本 |
-| 内核版本 | 没有硬编码版本判断；TCP-only 主线能力约从 4.17 起，启用 UDP 因 `INET_SOCK_RELEASE` 实际应以主线 Linux 5.9+ 为基线；厂商回移内核需按功能测试 | 官方明确要求 Linux 5.17+ |
+| 内核版本 | 没有硬编码版本判断；TCP-only 主线能力约从 4.17 起；UDP sendmsg/recvmsg 需按实际内核测试，缺少较新的 `INET_SOCK_RELEASE` 时自动使用 LRU 兼容模式 | 官方明确要求 Linux 5.17+ |
 | BTF/CO-RE | 不需要内核 BTF；cgroup 程序使用原始指令生成，TC 对象不依赖 CO-RE | 需要 BTF、CO-RE 及更完整的 eBPF/kprobe 配置 |
-| 额外内核能力 | cgroup v2、`CONFIG_CGROUP_BPF`、sock_addr/sock_release；热点还需 sched_cls、clsact、`CAP_NET_ADMIN` | TC ingress/egress、cgroup2、BTF、kprobe、ring buffer、`bpf_loop`、socket lookup/assignment；netkit 为可选优化 |
+| 额外内核能力 | cgroup v2、`CONFIG_CGROUP_BPF`、所启用协议需要的 sock_addr hook；sock_release 可选；热点仅在启用时要求 sched_cls、clsact、`CAP_NET_ADMIN` | TC ingress/egress、cgroup2、BTF、kprobe、ring buffer、`bpf_loop`、socket lookup/assignment；netkit 为可选优化 |
 | 新内核优化 | 暂无依赖新内核的特殊快速路径 | 6.7+ 可尝试 netkit；满足安全条件的 6.8+ 可使用 `bpf_redirect_peer`，否则回退 veth/普通 redirect |
 
 ### `shared_network` 在标准 Linux 上的定位
@@ -103,7 +103,7 @@ OpenWrt 也属于这一范围，但当前入站即使只启用 `shared_network`�
 
 | 入站 | 捕获方式 | 协议/范围 | 性能特征 | 配置复杂度 | Linux 内核要求 | 更适合 |
 |---|---|---|---|---|---|---|
-| 当前 eBPF | cgroup socket-address；可选 TC shared-network | TCP/UDP；本机及指定下游接口 | 本机捕获开销低；CIDR 绕过近似原生；未绕过流量仍进用户态 | JSON 较简单，但构建、权限和内核兼容最复杂 | cgroup2、BPF syscall、相关 attach type；UDP 建议 5.9+；热点还需 TC | root Android、本机透明代理、手机热点 |
+| 当前 eBPF | cgroup socket-address；可选 TC shared-network | TCP/UDP；本机及指定下游接口 | 本机捕获开销低；CIDR 绕过近似原生；未绕过流量仍进用户态 | JSON 较简单，但构建、权限和内核兼容最复杂 | cgroup2、BPF syscall、已启用协议的 attach type；旧内核 UDP 可回退 LRU 清理；热点仅启用时需要 TC | root Android、本机透明代理、手机热点 |
 | TUN | 路由把 L3 数据包送入虚拟网卡，再由 system/gVisor/mixed 栈处理 | 捕获范围最广，跨平台能力最好 | 一般有额外包复制和 L3 到 L4 处理；Linux `auto_redirect` 可明显优化 | `auto_route` 后较简单，复杂网络需处理路由、DNS、MTU | `CONFIG_TUN`；`auto_redirect` 还需 nftables、策略路由 | 通用桌面、移动 VPN、兼容性优先 |
 | Redirect | nftables/iptables REDIRECT/DNAT，listener 用 `SO_ORIGINAL_DST` 取原目标 | sing-box 中仅 TCP | 成熟且开销较低，但只有 TCP | 需要外部防火墙规则和防环配置 | 常规 netfilter/NAT/conntrack，要求最低 | 简单 Linux TCP 透明代理 |
 | TProxy | nftables/iptables TPROXY + fwmark + 策略路由，`IP_TRANSPARENT` listener | TCP/UDP，保留原源/目标语义 | 成熟、性能稳定，但按包经过 netfilter；通常不如优化后的 TUN `auto_redirect` 或特定 eBPF 快路径 | 最高，需要 mark、rule、local route、IPv4/IPv6 防环规则 | netfilter TPROXY、策略路由、透明 socket | Linux 路由器、需要标准透明代理语义 |

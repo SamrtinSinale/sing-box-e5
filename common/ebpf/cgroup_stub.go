@@ -47,6 +47,10 @@ func (b *CgroupBackend) AttachedPrograms() []string {
 	return nil
 }
 
+func (b *CgroupBackend) UsesSocketRelease() bool {
+	return false
+}
+
 func (b *CgroupBackend) SocketProtectFunc() control.Func {
 	return nil
 }
