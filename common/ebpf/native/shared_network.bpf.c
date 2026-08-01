@@ -611,8 +611,8 @@ NOINLINE int ingress_ipv6(
         l3_offset,
         (__u32)transport,
         false,
-        scratch->original_value.addr,
-        scratch->listener_key.token_addr,
+        scratch->original.original_addr,
+        scratch->token.token_addr,
         ports->destination,
         swap16(control->listener_port),
         protocol);

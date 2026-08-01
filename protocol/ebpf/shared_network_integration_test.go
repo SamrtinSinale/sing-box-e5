@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +20,70 @@ import (
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
+	"golang.org/x/sys/unix"
 )
+
+const sharedNetworkUDPClientHelperEnv = "SING_BOX_EBPF_SHARED_UDP_CLIENT_HELPER"
+
+func TestSharedNetworkUDPClientHelper(t *testing.T) {
+	if os.Getenv(sharedNetworkUDPClientHelperEnv) != "1" {
+		t.Skip("shared-network integration test helper")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	pinCurrentThread(t)
+	conn, err := net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6unspecified})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	destinations := []netip.AddrPort{
+		netip.MustParseAddrPort("[2001:db8:1::1]:53"),
+		netip.MustParseAddrPort("[2001:4860:4860::8888]:5353"),
+		netip.MustParseAddrPort("[2001:db8:1::1]:53"),
+	}
+	for index, destination := range destinations {
+		payload := fmt.Appendf(nil, "flow-%d", index)
+		if _, err = conn.WriteToUDPAddrPort(payload, destination); err != nil {
+			t.Fatal(err)
+		}
+		if err = conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		response := make([]byte, 64)
+		n, source, readErr := conn.ReadFromUDPAddrPort(response)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if source != destination {
+			t.Fatalf("unexpected restored source for flow %d: %s", index, source)
+		}
+		expectedResponse := append([]byte("udp6-ok:"), payload...)
+		if !bytes.Equal(response[:n], expectedResponse) {
+			t.Fatalf("unexpected response for flow %d: %q", index, response[:n])
+		}
+	}
+}
+
+func pinCurrentThread(t *testing.T) {
+	t.Helper()
+	var available unix.CPUSet
+	if err := unix.SchedGetaffinity(0, &available); err != nil {
+		t.Fatal(err)
+	}
+	for cpu := 0; cpu < 1024; cpu++ {
+		if !available.IsSet(cpu) {
+			continue
+		}
+		var selected unix.CPUSet
+		selected.Set(cpu)
+		if err := unix.SchedSetaffinity(0, &selected); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	t.Fatal("current process has no available CPU")
+}
 
 func TestSharedNetworkDataPathIntegration(t *testing.T) {
 	if os.Getenv("SING_BOX_EBPF_SHARED_INTEGRATION") != "1" {
@@ -113,7 +177,7 @@ func TestSharedNetworkDataPathIntegration(t *testing.T) {
 		EnableUDP:    true,
 		RedirectIPv4: redirectPrefix,
 		RedirectIPv6: redirectPrefix6,
-		MapCapacity:  4,
+		MapCapacity:  5,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -273,51 +337,58 @@ func TestSharedNetworkDataPathIntegration(t *testing.T) {
 
 	udp6Result := make(chan error, 1)
 	go func() {
-		_ = udp6Listener.SetReadDeadline(time.Now().Add(5 * time.Second))
-		payload := make([]byte, 64)
-		oob := make([]byte, 256)
-		n, oobN, _, client, readErr := udp6Listener.ReadMsgUDPAddrPort(payload, oob)
-		if readErr != nil {
-			udp6Result <- readErr
-			return
+		destinations := []netip.AddrPort{
+			netip.MustParseAddrPort("[2001:db8:1::1]:53"),
+			netip.MustParseAddrPort("[2001:4860:4860::8888]:5353"),
+			netip.MustParseAddrPort("[2001:db8:1::1]:53"),
 		}
-		tokenAddress, parseErr := redirectAddressFromOOB(oob[:oobN])
-		if parseErr != nil {
-			udp6Result <- parseErr
-			return
+		for _, expectedDestination := range destinations {
+			_ = udp6Listener.SetReadDeadline(time.Now().Add(5 * time.Second))
+			payload := make([]byte, 64)
+			oob := make([]byte, 256)
+			n, oobN, _, client, readErr := udp6Listener.ReadMsgUDPAddrPort(payload, oob)
+			if readErr != nil {
+				udp6Result <- readErr
+				return
+			}
+			tokenAddress, parseErr := redirectAddressFromOOB(oob[:oobN])
+			if parseErr != nil {
+				udp6Result <- parseErr
+				return
+			}
+			tokenDestination := netip.AddrPortFrom(tokenAddress, listenerPort)
+			original, lookupErr := backend.LookupOriginal(ECommon.ProtocolUDP, client, tokenDestination)
+			if lookupErr != nil {
+				udp6Result <- lookupErr
+				return
+			}
+			if original.Destination != expectedDestination {
+				udp6Result <- &unexpectedDestinationError{original.Destination}
+				return
+			}
+			controlMessage := (&ipv6.ControlMessage{Src: net.IP(tokenAddress.AsSlice())}).Marshal()
+			if _, _, writeErr := udp6Listener.WriteMsgUDPAddrPort(
+				append([]byte("udp6-ok:"), payload[:n]...),
+				controlMessage,
+				client,
+			); writeErr != nil {
+				udp6Result <- writeErr
+				return
+			}
 		}
-		tokenDestination := netip.AddrPortFrom(tokenAddress, listenerPort)
-		original, lookupErr := backend.LookupOriginal(ECommon.ProtocolUDP, client, tokenDestination)
-		if lookupErr != nil {
-			udp6Result <- lookupErr
-			return
-		}
-		if original.Destination != netip.MustParseAddrPort("[2001:db8:1::1]:53") {
-			udp6Result <- &unexpectedDestinationError{original.Destination}
-			return
-		}
-		controlMessage := (&ipv6.ControlMessage{Src: net.IP(tokenAddress.AsSlice())}).Marshal()
-		_, _, writeErr := udp6Listener.WriteMsgUDPAddrPort(
-			append([]byte("udp6-ok:"), payload[:n]...),
-			controlMessage,
-			client,
-		)
-		udp6Result <- writeErr
+		udp6Result <- nil
 	}()
 	udp6Context, udp6Cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer udp6Cancel()
 	udp6Command := exec.CommandContext(
 		udp6Context,
-		"ip", "netns", "exec", namespace,
-		"nc", "-6", "-u", "-w", "3", "2001:db8:1::1", "53",
+		"ip", "netns", "exec", namespace, os.Args[0],
+		"-test.run=^TestSharedNetworkUDPClientHelper$",
 	)
-	udp6Command.Stdin = strings.NewReader("dns6")
-	udp6Output, err := udp6Command.Output()
+	udp6Command.Env = append(os.Environ(), sharedNetworkUDPClientHelperEnv+"=1")
+	udp6Output, err := udp6Command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("IPv6 UDP client: %v", err)
-	}
-	if string(udp6Output) != "udp6-ok:dns6" {
-		t.Fatalf("unexpected IPv6 UDP response: %q", udp6Output)
+		t.Fatalf("IPv6 UDP client: %v: %s", err, udp6Output)
 	}
 	if err = <-udp6Result; err != nil {
 		t.Fatal(err)
