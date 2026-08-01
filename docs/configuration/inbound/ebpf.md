@@ -329,6 +329,59 @@ The eBPF inbound does not emit per-connection Info logs. When the Clash API is
 enabled, use its connection view for source, destination, traffic, and rule
 metadata. Startup, attachment, cleanup, and error messages remain in the log.
 
+### OpenWrt
+
+OpenWrt is within the standard Linux support scope, but an arbitrary official
+or vendor firmware must not be assumed to work. The eBPF inbound always
+initializes its local cgroup data path. Consequently, cgroup support remains
+required even when only `shared_network` is wanted. Generic OpenWrt kernel
+configurations commonly disable `CONFIG_CGROUPS`, and this option cannot be
+added by installing an `.ipk` kernel module. Such firmware requires a custom
+kernel or firmware build.
+
+Verify the **effective kernel configuration on the target device** before use:
+
+- `CONFIG_BPF`, `CONFIG_BPF_SYSCALL`, `CONFIG_CGROUPS`, and
+  `CONFIG_CGROUP_BPF` must be enabled, and a writable cgroup v2 must be
+  mounted. The kernel must also provide the cgroup connect, UDP
+  sendmsg/recvmsg, and socket-release attach types required by the
+  configuration. `CONFIG_BPF_JIT` is not functionally required, but is
+  strongly recommended on a router.
+- `shared_network` additionally needs `CONFIG_NET_SCHED`,
+  `CONFIG_NET_SCH_INGRESS`, `CONFIG_NET_CLS_ACT`, and `CONFIG_NET_CLS_BPF`.
+  On common OpenWrt releases these are usually supplied by
+  `kmod-sched-core` and `kmod-sched-bpf`; package names and built-in/module
+  choices can vary between releases and vendor trees.
+- sing-box must run as root or with equivalent permission to use the BPF
+  syscall, attach cgroup and TC programs, create maps, manage local routes,
+  and write per-interface `route_localnet`. A procd jail, container, or
+  capability set must not remove those permissions. The kernel must also
+  allow enough locked memory for the configured maps.
+
+`shared_network` does not replace OpenWrt network services. The firewall, IP
+forwarding, IPv4 NAT, DHCP, DNS, and IPv6 router advertisements and neighbor
+discovery remain the responsibility of firewall4, dnsmasq, odhcpd, or another
+system component. `include_interface` must identify the interface whose TC
+ingress and egress actually see client frames. With DSA, a Linux bridge, or a
+wireless AP this may be a client-facing port or AP interface rather than
+`br-lan`; verify the path for the specific driver instead of relying only on
+the logical network name.
+
+Hardware flow offload, NSS/PPE or shortcut forwarding, switch or wireless
+hardware acceleration, and XDP cannot be intercepted when they bypass the
+selected Linux TC hook. If only DNS, initial packets, or a subset of
+connections is visible, disable hardware offload first. Whether software flow
+offload preserves the relevant TC path should also be verified for the
+OpenWrt release and driver. IPv6 additionally requires working forwarding,
+RA/NDP, and an explicit IPv6 ULA `/64` in `redirect_address`.
+
+An OpenWrt build should use an OpenWrt SDK/toolchain matching the target
+architecture and ABI, with cgo and `with_ebpf` enabled. A dynamically linked
+binary must also match the target firmware's libc. A BPF-capable Clang on the
+build host compiles the TC object, which is then embedded in the binary. The
+target does not need Clang, `tc`, `bpftool`, libbpf, or libelf at runtime;
+`tc` and `bpftool` are useful only for diagnostics.
+
 ### Build
 
 Use the existing `make build` target with cgo enabled and append `with_ebpf` to

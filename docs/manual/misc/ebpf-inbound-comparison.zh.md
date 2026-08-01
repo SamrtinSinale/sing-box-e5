@@ -82,6 +82,11 @@ UID 包含/排除策略、Android `dns_tether` UID 1052 排除以及 DHCP 端口
 捕获的 TCP/UDP 交给自身路由。bridge、IP forwarding、IPv4 NAT、IPv6 RA/NDP、DHCP
 和未代理时的 DNS 服务仍由系统或其他守护进程负责。
 
+OpenWrt 也属于这一范围，但当前入站即使只启用 `shared_network`，仍依赖本机 cgroup
+数据路径。许多 OpenWrt 固件没有启用不可模块化补装的 `CONFIG_CGROUPS`，因此不能只
+安装 TC kmod 后使用；完整的内核、软件包、权限、卸载路径和构建要求见
+[eBPF 入站文档](/zh/configuration/inbound/ebpf/#openwrt)。
+
 在 Linux bridge 上应选择客户端报文实际进入 TC ingress 的成员端口；bridge master
 是否能看到同一批帧取决于内核和驱动。该实现适合以本机为默认网关的路由下游，不是
 通用二层透明桥代理。sing-box 使用 TC 优先级 `1`，绕过流量会继续交给后续 filter；

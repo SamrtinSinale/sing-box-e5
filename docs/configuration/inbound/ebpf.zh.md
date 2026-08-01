@@ -276,6 +276,44 @@ sing-box 排在其后，公网 IPv6 会先被直接重定向到上游。发给�
 eBPF 入站不输出逐连接 Info 日志。启用 Clash API 后，应通过其连接视图查看源地址、
 目标地址、流量和规则 metadata；启动、挂载、清理及错误日志仍会保留。
 
+### OpenWrt
+
+OpenWrt 属于标准 Linux 支持范围，但不应假定任意官方或厂商固件都能直接使用。当前
+eBPF 入站始终初始化本机 cgroup 数据路径；即使只需要 `shared_network`，仍必须满足
+cgroup 要求。OpenWrt 的通用内核配置通常关闭 `CONFIG_CGROUPS`，且该选项不能通过
+安装 `.ipk` 内核模块补充，因此这类固件需要重新构建内核或固件。
+
+运行前应在**目标设备的实际内核配置**中确认：
+
+- `CONFIG_BPF`、`CONFIG_BPF_SYSCALL`、`CONFIG_CGROUPS` 和
+  `CONFIG_CGROUP_BPF` 已启用，并已挂载可写的 cgroup v2；内核还必须支持当前配置
+  所需的 cgroup connect、UDP sendmsg/recvmsg 和 socket-release attach type。
+  `CONFIG_BPF_JIT` 不是功能必需项，但路由器场景强烈建议启用。
+- 使用 `shared_network` 时，还需要 `CONFIG_NET_SCHED`、
+  `CONFIG_NET_SCH_INGRESS`、`CONFIG_NET_CLS_ACT` 和 `CONFIG_NET_CLS_BPF`。
+  在常见 OpenWrt 版本中，这部分通常由 `kmod-sched-core` 和 `kmod-sched-bpf`
+  提供；软件包名称和内置/模块状态可能随版本及厂商源码变化。
+- sing-box 必须以 root 或等效权限运行，能够执行 BPF syscall、挂载 cgroup/TC
+  程序、创建 map、管理本地路由和写入逐接口 `route_localnet`。procd jail、容器或
+  capability 裁剪不能移除这些权限；内核还必须允许足够的锁定内存用于配置的 map。
+
+`shared_network` 不替代 OpenWrt 的网络服务。防火墙、IP forwarding、IPv4 NAT、
+DHCP、DNS 以及 IPv6 RA/NDP 仍由 firewall4、dnsmasq、odhcpd 或其他系统组件负责。
+`include_interface` 应填写客户端帧实际经过 TC ingress/egress 的接口；在 DSA、
+Linux bridge 和无线 AP 配置中，这可能是面向客户端的端口或 AP 接口，而不一定是
+`br-lan`。应按具体驱动验证，不能只根据逻辑网络名称判断。
+
+硬件 flow offload、NSS/PPE/shortcut forwarding、交换芯片或无线硬件加速、XDP 等
+路径如果绕过所选接口的 Linux TC hook，`shared_network` 就无法捕获对应流量。遇到
+只有 DNS、首包或部分连接可见时，应先关闭硬件卸载再测试；软件 flow offload 是否
+保留 TC 路径也应按 OpenWrt 版本和驱动验证。IPv6 还需要正常的转发、RA/NDP，并在
+`redirect_address` 中显式配置 IPv6 ULA `/64`。
+
+为 OpenWrt 构建时应使用匹配目标架构和 ABI 的 OpenWrt SDK/toolchain，并启用 cgo
+与 `with_ebpf`；动态链接的产物还必须匹配目标固件的 libc。TC eBPF 对象在构建
+主机上由带 BPF 后端的 Clang 编译后嵌入二进制。目标设备运行时不依赖 Clang、
+`tc`、`bpftool`、libbpf 或 libelf；`tc` 和 `bpftool` 仅对诊断有帮助。
+
 ### 构建
 
 继续使用现有的 `make build` 目标。构建时需要启用 cgo，并在平时使用的
