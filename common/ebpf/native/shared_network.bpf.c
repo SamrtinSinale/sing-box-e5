@@ -136,6 +136,8 @@ static void *(*map_lookup)(void *map, const void *key) = (void *)BPF_FUNC_map_lo
 static long (*map_update)(void *map, const void *key, const void *value, __u64 flags) =
     (void *)BPF_FUNC_map_update_elem;
 static long (*map_delete)(void *map, const void *key) = (void *)BPF_FUNC_map_delete_elem;
+static __s64 (*csum_diff)(const __be32 *from, __u32 from_size, const __be32 *to, __u32 to_size, __wsum seed) =
+    (void *)BPF_FUNC_csum_diff;
 static long (*skb_pull_data)(struct __sk_buff *skb, __u32 length) = (void *)BPF_FUNC_skb_pull_data;
 static long (*skb_store_bytes)(struct __sk_buff *skb, __u32 offset, const void *from, __u32 length, __u64 flags) =
     (void *)BPF_FUNC_skb_store_bytes;
@@ -400,26 +402,19 @@ INLINE int rewrite_ipv6(
     __u32 checksum_offset = l4_offset + (protocol == IPPROTO_TCP_VALUE
         ? __builtin_offsetof(struct tcp_header_min, checksum)
         : __builtin_offsetof(struct udp_header_min, checksum));
-#pragma clang loop unroll(full)
-    for (__u32 offset = 0U; offset < 16U; offset += 4U) {
-        __be32 old_word;
-        __be32 new_word;
-        __builtin_memcpy(&old_word, old_address + offset, 4U);
-        __builtin_memcpy(&new_word, new_address + offset, 4U);
-        if (l4_csum_replace(
-                skb,
-                checksum_offset,
-                old_word,
-                new_word,
-                checksum_flags(protocol, 4U)) != 0) {
-            return TC_ACT_SHOT;
-        }
-    }
+    __s64 address_diff = csum_diff(
+        (const __be32 *)old_address,
+        16U,
+        (const __be32 *)new_address,
+        16U,
+        0U);
+    if (address_diff < 0) return TC_ACT_SHOT;
     __u32 address_offset = l3_offset + (source
         ? __builtin_offsetof(struct ipv6_header, source)
         : __builtin_offsetof(struct ipv6_header, destination));
     __u32 port_offset = l4_offset + (source ? 0U : 2U);
-    if (l4_csum_replace(skb, checksum_offset, old_port, new_port, checksum_flags(protocol, 2U)) != 0 ||
+    if (l4_csum_replace(skb, checksum_offset, 0U, (__u64)address_diff, checksum_flags(protocol, 0U)) != 0 ||
+        l4_csum_replace(skb, checksum_offset, old_port, new_port, checksum_flags(protocol, 2U)) != 0 ||
         skb_store_bytes(skb, address_offset, new_address, 16U, 0U) != 0 ||
         skb_store_bytes(skb, port_offset, &new_port, sizeof(new_port), 0U) != 0) {
         return TC_ACT_SHOT;
