@@ -65,21 +65,21 @@ int sb_ebpf_shared_network_prepare(
         0U);
     stage = "create original-to-token map";
     runtime->original_to_token_map_fd = sb_ebpf_create_map(
-        BPF_MAP_TYPE_LRU_HASH,
+        BPF_MAP_TYPE_HASH,
         sizeof(struct sb_shared_original_key),
         sizeof(struct sb_shared_token_value),
         map_capacity,
         0U);
     stage = "create reply lookup map";
     runtime->reply_map_fd = sb_ebpf_create_map(
-        BPF_MAP_TYPE_LRU_HASH,
+        BPF_MAP_TYPE_HASH,
         sizeof(struct sb_shared_reply_key),
         sizeof(struct sb_shared_reply_value),
         map_capacity,
         0U);
     stage = "create listener lookup map";
     runtime->listener_map_fd = sb_ebpf_create_map(
-        BPF_MAP_TYPE_LRU_HASH,
+        BPF_MAP_TYPE_HASH,
         sizeof(struct sb_shared_listener_key),
         sizeof(struct sb_shared_original_value),
         map_capacity,

@@ -307,7 +307,7 @@ NOINLINE bool reserve_token(struct sb_shared_scratch *scratch, const struct sb_s
     struct sb_shared_token_value *existing = map_lookup(&shared_original_to_token, &scratch->original);
     if (existing != 0) {
         __builtin_memcpy(&scratch->token, existing, sizeof(scratch->token));
-        return sync_token(scratch, control, BPF_ANY);
+        return true;
     }
 #pragma clang loop unroll(full)
     for (__u32 attempt = 0U; attempt < SB_SHARED_TOKEN_ATTEMPTS; ++attempt) {
@@ -450,11 +450,11 @@ NOINLINE int ingress_ipv4(
     void *data_end = (void *)(long)skb->data_end;
     struct ipv4_header *ip = data + l3_offset;
     if ((void *)(ip + 1) > data_end || ip->version != 4U || ip->ihl < 5U) return TC_ACT_PIPE;
+    if (!selected_protocol(ip->protocol, control)) return TC_ACT_PIPE;
+    if ((swap16(ip->fragment_offset) & IP_FRAGMENT_MASK) != 0U) return TC_ACT_SHOT;
     __u32 header_length = (__u32)ip->ihl * 4U;
     struct transport_ports *ports = (void *)ip + header_length;
-    if ((void *)(ports + 1) > data_end) return TC_ACT_PIPE;
-    if ((swap16(ip->fragment_offset) & IP_FRAGMENT_MASK) != 0U) return TC_ACT_PIPE;
-    if (!selected_protocol(ip->protocol, control)) return TC_ACT_PIPE;
+    if ((void *)(ports + 1) > data_end) return TC_ACT_SHOT;
     __u16 source_port = swap16(ports->source);
     __u16 destination_port = swap16(ports->destination);
     if (!proxy_ipv4(
@@ -466,24 +466,9 @@ NOINLINE int ingress_ipv4(
         return TC_ACT_PIPE;
     }
 
-    if (skb_pull_data(skb, 0U) != 0) return TC_ACT_PIPE;
-    data = (void *)(long)skb->data;
-    data_end = (void *)(long)skb->data_end;
-    ip = data + l3_offset;
-    if ((void *)(ip + 1) > data_end || ip->version != 4U || ip->ihl < 5U) return TC_ACT_PIPE;
-    header_length = (__u32)ip->ihl * 4U;
-    ports = (void *)ip + header_length;
-    if ((void *)(ports + 1) > data_end ||
-        (swap16(ip->fragment_offset) & IP_FRAGMENT_MASK) != 0U ||
-        !selected_protocol(ip->protocol, control)) {
-        return TC_ACT_PIPE;
-    }
-    source_port = swap16(ports->source);
-    destination_port = swap16(ports->destination);
-
     __u32 zero = 0U;
     struct sb_shared_scratch *scratch = map_lookup(&shared_scratch, &zero);
-    if (scratch == 0) return TC_ACT_PIPE;
+    if (scratch == 0) return TC_ACT_SHOT;
     __builtin_memset(&scratch->original, 0, sizeof(scratch->original));
     scratch->original.ifindex = skb->ifindex;
     scratch->original.family = AF_INET_VALUE;
@@ -492,7 +477,7 @@ NOINLINE int ingress_ipv4(
     scratch->original.original_port = destination_port;
     __builtin_memcpy(scratch->original.client_addr, &ip->source, 4U);
     __builtin_memcpy(scratch->original.original_addr, &ip->destination, 4U);
-    if (!reserve_token(scratch, control)) return TC_ACT_PIPE;
+    if (!reserve_token(scratch, control)) return TC_ACT_SHOT;
     __be32 token_address;
     __builtin_memcpy(&token_address, scratch->token.token_addr, 4U);
     return rewrite_ipv4(
@@ -524,21 +509,6 @@ NOINLINE int egress_ipv4(
         return TC_ACT_SHOT;
     }
     if (swap16(ports->source) != control->listener_port) return TC_ACT_PIPE;
-
-    if (skb_pull_data(skb, 0U) != 0) return TC_ACT_PIPE;
-    data = (void *)(long)skb->data;
-    data_end = (void *)(long)skb->data_end;
-    ip = data + l3_offset;
-    if ((void *)(ip + 1) > data_end || ip->version != 4U || ip->ihl < 5U) return TC_ACT_SHOT;
-    header_length = (__u32)ip->ihl * 4U;
-    ports = (void *)ip + header_length;
-    if ((void *)(ports + 1) > data_end ||
-        (swap16(ip->fragment_offset) & IP_FRAGMENT_MASK) != 0U ||
-        !selected_protocol(ip->protocol, control) ||
-        !ipv4_token_address(ip->source, control) ||
-        swap16(ports->source) != control->listener_port) {
-        return TC_ACT_SHOT;
-    }
 
     __u32 zero = 0U;
     struct sb_shared_scratch *scratch = map_lookup(&shared_scratch, &zero);
@@ -624,22 +594,9 @@ NOINLINE int ingress_ipv6(
         return TC_ACT_PIPE;
     }
 
-    if (skb_pull_data(skb, 0U) != 0) return TC_ACT_PIPE;
-    data = (void *)(long)skb->data;
-    data_end = (void *)(long)skb->data_end;
-    ip = data + l3_offset;
-    if ((void *)(ip + 1) > data_end || (swap32(ip->version_flow) >> 28U) != 6U) return TC_ACT_PIPE;
-    protocol = 0U;
-    transport = ipv6_transport_offset(data, data_end, l3_offset, &protocol);
-    if (transport < 0 || !selected_protocol(protocol, control)) return TC_ACT_PIPE;
-    ports = data + transport;
-    if ((void *)(ports + 1) > data_end) return TC_ACT_PIPE;
-    source_port = swap16(ports->source);
-    destination_port = swap16(ports->destination);
-
     __u32 zero = 0U;
     struct sb_shared_scratch *scratch = map_lookup(&shared_scratch, &zero);
-    if (scratch == 0) return TC_ACT_PIPE;
+    if (scratch == 0) return TC_ACT_SHOT;
     __builtin_memset(&scratch->original, 0, sizeof(scratch->original));
     scratch->original.ifindex = skb->ifindex;
     scratch->original.family = AF_INET6_VALUE;
@@ -648,7 +605,7 @@ NOINLINE int ingress_ipv6(
     scratch->original.original_port = destination_port;
     copy_address(scratch->original.client_addr, ip->source, 16U);
     copy_address(scratch->original.original_addr, ip->destination, 16U);
-    if (!reserve_token(scratch, control)) return TC_ACT_PIPE;
+    if (!reserve_token(scratch, control)) return TC_ACT_SHOT;
     return rewrite_ipv6(
         skb,
         l3_offset,
@@ -676,23 +633,6 @@ NOINLINE int egress_ipv6(
     struct transport_ports *ports = data + transport;
     if ((void *)(ports + 1) > data_end) return TC_ACT_SHOT;
     if (swap16(ports->source) != control->listener_port) return TC_ACT_PIPE;
-
-    if (skb_pull_data(skb, 0U) != 0) return TC_ACT_PIPE;
-    data = (void *)(long)skb->data;
-    data_end = (void *)(long)skb->data_end;
-    ip = data + l3_offset;
-    if ((void *)(ip + 1) > data_end ||
-        (swap32(ip->version_flow) >> 28U) != 6U ||
-        !ipv6_token_address(ip->source, control)) {
-        return TC_ACT_SHOT;
-    }
-    protocol = 0U;
-    transport = ipv6_transport_offset(data, data_end, l3_offset, &protocol);
-    if (transport < 0 || !selected_protocol(protocol, control)) return TC_ACT_SHOT;
-    ports = data + transport;
-    if ((void *)(ports + 1) > data_end || swap16(ports->source) != control->listener_port) {
-        return TC_ACT_SHOT;
-    }
 
     __u32 zero = 0U;
     struct sb_shared_scratch *scratch = map_lookup(&shared_scratch, &zero);
@@ -726,6 +666,7 @@ NOINLINE int classify(struct __sk_buff *skb, bool ingress) {
     __u32 zero = 0U;
     struct sb_shared_control *control = map_lookup(&shared_control, &zero);
     if (control == 0 || control->enabled == 0U) return TC_ACT_PIPE;
+    if (skb_pull_data(skb, 0U) != 0) return TC_ACT_SHOT;
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
     struct ethernet_header *ethernet = data;
