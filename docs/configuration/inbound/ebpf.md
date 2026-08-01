@@ -294,7 +294,10 @@ listener-lookup entries together.
 
 `shared_network.map_capacity` controls each of those three shared flow maps.
 It defaults to `65536` and accepts `1` through `1048576`; increasing it raises
-locked kernel-memory use for all three maps.
+locked kernel-memory use for all three maps. These are regular hash maps with
+explicit flow cleanup, rather than LRU maps that may silently evict an active
+flow. If a selected flow cannot allocate or update all required state, its
+packets are dropped instead of falling back to a direct connection.
 
 DHCP ports 67, 68, 546, and 547 always bypass TC. In `dns_mode: hijack`,
 destination port 53 is captured before host, private-network, or
@@ -302,6 +305,14 @@ destination port 53 is captured before host, private-network, or
 `dns_mode: off`, destination port 53 always keeps its normal forwarding path.
 Other host, private, link-local, multicast, and configured bypass CIDRs also
 keep their normal forwarding path.
+
+Packets that policy explicitly bypasses return `TC_ACT_PIPE` and continue to
+later TC filters. Once a packet has been selected for interception, token
+allocation, state lookup, and packet rewrite failures are fail-closed. An IPv4
+TCP/UDP fragment or truncated transport header selected for interception is
+also dropped because it cannot be transparently rewritten without risking a
+direct leak. Avoid IPv4 fragmentation on the downstream path by using a
+suitable MTU and MSS policy.
 
 For IPv4, token addresses use the configured loopback redirect prefix.
 sing-box temporarily enables `net.ipv4.conf.<interface>.route_localnet` only
@@ -336,6 +347,10 @@ verify the chosen bridge-port hook and any pre-existing priority `1` TC filter.
 The eBPF inbound does not emit per-connection Info logs. When the Clash API is
 enabled, use its connection view for source, destination, traffic, and rule
 metadata. Startup, attachment, cleanup, and error messages remain in the log.
+Repeated UDP packet-info, original-destination lookup, and flow-cleanup
+warnings are limited independently to one report per ten seconds. A resumed
+report includes the number of similar warnings suppressed in the preceding
+window.
 
 ### OpenWrt
 

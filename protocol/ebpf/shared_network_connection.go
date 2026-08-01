@@ -50,7 +50,7 @@ func (s *sharedNetwork) NewPacket(buffer *buf.Buffer, oob []byte, source M.Socks
 	}
 	tokenAddress, err := redirectAddressFromOOB(oob)
 	if err != nil {
-		s.inbound.logger.Warn("read shared-network UDP token address: ", err)
+		s.udpWarnings.packetInfo.warn(s.inbound.logger, "read shared-network UDP token address: ", err)
 		return
 	}
 	client := source.AddrPort()
@@ -61,7 +61,7 @@ func (s *sharedNetwork) NewPacket(buffer *buf.Buffer, oob []byte, source M.Socks
 	if !loaded {
 		original, flow, err = backend.LookupFlow(ECommon.ProtocolUDP, client, tokenDestination)
 		if err != nil {
-			s.inbound.logger.Warn("lookup shared-network UDP original destination: ", err)
+			s.udpWarnings.originalDestination.warn(s.inbound.logger, "lookup shared-network UDP original destination: ", err)
 			return
 		}
 	}
@@ -109,7 +109,7 @@ func (s *sharedNetwork) releaseFlow(flow *ECommon.SharedNetworkFlowHandle) {
 		return
 	}
 	if err := backend.ReleaseFlow(flow); err != nil {
-		s.inbound.logger.Warn("release shared-network flow: ", err)
+		s.udpWarnings.cleanup.warn(s.inbound.logger, "release shared-network flow: ", err)
 	}
 }
 

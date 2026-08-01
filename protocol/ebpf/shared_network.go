@@ -23,6 +23,7 @@ type sharedNetwork struct {
 	listeners       internalListenerSet
 	udpNat          *udpnat.Service
 	udpClientTable  udpClientTable
+	udpWarnings     udpWarningLimiters
 	mapCapacity     uint32
 	lifecycleAccess sync.RWMutex
 	backendAccess   sync.RWMutex

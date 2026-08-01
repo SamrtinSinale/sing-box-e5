@@ -3,7 +3,10 @@
 package ebpf
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -110,7 +113,7 @@ func TestSharedNetworkDataPathIntegration(t *testing.T) {
 		EnableUDP:    true,
 		RedirectIPv4: redirectPrefix,
 		RedirectIPv6: redirectPrefix6,
-		MapCapacity:  ECommon.SharedNetworkMapCapacity,
+		MapCapacity:  4,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -137,6 +140,7 @@ func TestSharedNetworkDataPathIntegration(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = manager.closeAttachments() })
 
+	tcpPayload := bytes.Repeat([]byte("shared-network-gso-path"), 16384)
 	tcpResult := make(chan error, 1)
 	go func() {
 		_ = tcpListener.SetDeadline(time.Now().Add(5 * time.Second))
@@ -157,12 +161,22 @@ func TestSharedNetworkDataPathIntegration(t *testing.T) {
 			tcpResult <- &unexpectedDestinationError{original.Destination}
 			return
 		}
+		payload := make([]byte, len(tcpPayload))
+		if _, readErr := io.ReadFull(conn, payload); readErr != nil {
+			tcpResult <- readErr
+			return
+		}
+		if !bytes.Equal(payload, tcpPayload) {
+			tcpResult <- fmt.Errorf("unexpected intercepted payload length: %d", len(payload))
+			return
+		}
 		_, writeErr := conn.Write([]byte("tcp-ok"))
 		tcpResult <- writeErr
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	tcpCommand := exec.CommandContext(ctx, "ip", "netns", "exec", namespace, "nc", "-w", "3", "8.8.8.8", "18080")
+	tcpCommand.Stdin = bytes.NewReader(tcpPayload)
 	tcpOutput, err := tcpCommand.Output()
 	if err != nil {
 		t.Fatalf("TCP client: %v", err)
@@ -346,6 +360,31 @@ func TestSharedNetworkDataPathIntegration(t *testing.T) {
 	}
 	if err = <-dhcpResult; err != nil {
 		t.Fatal(err)
+	}
+
+	mapFullAccept := make(chan error, 1)
+	go func() {
+		_ = tcpListener.SetDeadline(time.Now().Add(2 * time.Second))
+		conn, acceptErr := tcpListener.AcceptTCP()
+		if acceptErr == nil {
+			_ = conn.Close()
+		}
+		mapFullAccept <- acceptErr
+	}()
+	mapFullContext, mapFullCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer mapFullCancel()
+	mapFullCommand := exec.CommandContext(
+		mapFullContext,
+		"ip", "netns", "exec", namespace,
+		"nc", "-w", "1", "9.9.9.9", "19090",
+	)
+	_ = mapFullCommand.Run()
+	acceptErr := <-mapFullAccept
+	if acceptErr == nil {
+		t.Fatal("shared-network listener accepted a flow after its maps reached capacity")
+	}
+	if networkError, isNetworkError := acceptErr.(net.Error); !isNetworkError || !networkError.Timeout() {
+		t.Fatalf("wait for map-capacity rejection: %v", acceptErr)
 	}
 
 	runIP("link", "del", hostLink)

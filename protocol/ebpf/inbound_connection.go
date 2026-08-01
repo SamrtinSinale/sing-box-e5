@@ -94,7 +94,7 @@ func (i *Inbound) NewPacket(buffer *buf.Buffer, oob []byte, source M.Socksaddr) 
 	}
 	redirectAddress, err := redirectAddressFromOOB(oob)
 	if err != nil {
-		i.logger.Warn("read UDP redirect address: ", err)
+		i.udpWarnings.packetInfo.warn(i.logger, "read UDP redirect address: ", err)
 		return
 	}
 	client := source.AddrPort()
@@ -104,7 +104,7 @@ func (i *Inbound) NewPacket(buffer *buf.Buffer, oob []byte, source M.Socksaddr) 
 	if !loaded {
 		original, err = backend.LookupOriginal(ECommon.ProtocolUDP, redirectDestination)
 		if err != nil {
-			i.logger.Warn("lookup UDP original destination: ", err)
+			i.udpWarnings.originalDestination.warn(i.logger, "lookup UDP original destination: ", err)
 			return
 		}
 	}
@@ -164,7 +164,7 @@ func (i *Inbound) deleteUDPRedirects(redirectAddresses []netip.Addr) {
 	for _, redirectAddress := range redirectAddresses {
 		redirectDestination := netip.AddrPortFrom(redirectAddress, i.listeners.selectedPort())
 		if err := backend.DeleteRedirect(ECommon.ProtocolUDP, redirectDestination); err != nil {
-			i.logger.Warn("delete UDP redirect mapping for ", redirectDestination, ": ", err)
+			i.udpWarnings.cleanup.warn(i.logger, "delete UDP redirect mapping for ", redirectDestination, ": ", err)
 		}
 	}
 }

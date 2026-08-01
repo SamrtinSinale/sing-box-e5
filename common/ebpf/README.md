@@ -25,7 +25,11 @@ The Go and `cgo_*.c` files in this directory form the cgo boundary. cgo only
 compiles C files located directly in the package directory, so the wrappers
 include implementation files from `native/`:
 
-- `native/cgroup.c` builds and manages the inbound maps and programs.
+- `native/cgroup.c` contains the shared cgroup definitions and includes the
+  program and runtime implementation in one cgo translation unit.
+- `native/cgroup_program.c` generates and loads the cgroup instructions.
+- `native/cgroup_runtime.c` creates the cgroup maps and manages prepare,
+  attach, and close operations.
 - `native/shared_network.bpf.c` is compiled to the embedded
   `native/shared_network.bpf.o` TC ingress/egress object.
 - `native/shared_network_loader.c` relocates and loads that object without
@@ -90,8 +94,9 @@ go test -count=1 -run TestCgroupBackendProgramLoadIntegration -tags with_ebpf ./
 
 The shared-network integration test additionally creates a temporary network
 namespace and veth pair. It verifies IPv4 and IPv6 public TCP interception,
-dual-stack DNS capture to the gateway in the default hijack mode, DHCP bypass,
-reply source restoration, TC cleanup, local redirect routes, and
+a large TCP payload through the TC/GSO path, dual-stack DNS capture to the
+gateway in the default hijack mode, DHCP bypass, fail-closed behavior at map
+capacity, reply source restoration, TC cleanup, local redirect routes, and
 `route_localnet` restoration. It requires `ip` and `nc`:
 
 ```sh

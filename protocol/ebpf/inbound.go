@@ -67,6 +67,7 @@ type Inbound struct {
 	bypassRuleSetStarted   bool
 
 	udpClientTable udpClientTable
+	udpWarnings    udpWarningLimiters
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.EBPFInboundOptions) (adapter.Inbound, error) {
