@@ -329,7 +329,8 @@ static void emit_original_socket_cookie(
     struct bpf_builder *builder,
     bool enabled) {
     if (!enabled) return;
-    emit(builder, BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_10, STACK_COOKIE_KEY));
+    emit(builder, BPF_MOV64_REG(BPF_REG_1, BPF_REG_6));
+    emit(builder, BPF_CALL_FUNC(BPF_FUNC_get_socket_cookie));
     emit(builder, BPF_STX_MEM(
         BPF_DW,
         BPF_REG_10,
@@ -353,8 +354,10 @@ static void emit_udp_connected_state_reset(
     int udp_peer_map_fd) {
     if (udp_redirect_map_fd < 0 || udp_token_map_fd < 0) return;
 
-    emit(builder, BPF_LDX_MEM(BPF_DW, BPF_REG_2, BPF_REG_10, STACK_COOKIE_KEY));
-    size_t no_cookie = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_2, 0, 0));
+    emit(builder, BPF_MOV64_REG(BPF_REG_1, BPF_REG_6));
+    emit(builder, BPF_CALL_FUNC(BPF_FUNC_get_socket_cookie));
+    size_t no_cookie = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_0, 0, 0));
+    emit(builder, BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_0, STACK_COOKIE_KEY));
 
     emit_ld_map_fd(builder, BPF_REG_1, udp_token_map_fd);
     emit(builder, BPF_MOV64_REG(BPF_REG_2, BPF_REG_10));
@@ -389,8 +392,13 @@ static void emit_udp_token_update(
         return;
     }
 
-    emit(builder, BPF_LDX_MEM(BPF_DW, BPF_REG_2, BPF_REG_10, STACK_COOKIE_KEY));
+    emit(builder, BPF_LDX_MEM(
+        BPF_DW,
+        BPF_REG_2,
+        BPF_REG_10,
+        STACK_ORIGINAL_DST + (int)offsetof(struct sb_ebpf_original_dst, socket_cookie)));
     size_t missing_cookie = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_2, 0, 0));
+    emit(builder, BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_2, STACK_COOKIE_KEY));
     emit_ld_map_fd(builder, BPF_REG_1, udp_token_map_fd);
     emit(builder, BPF_MOV64_REG(BPF_REG_2, BPF_REG_10));
     emit(builder, BPF_ALU64_IMM_OP(BPF_ADD, BPF_REG_2, STACK_COOKIE_KEY));
@@ -641,12 +649,6 @@ static void emit_ipv6_redirect_token(
     }
 }
 
-static void emit_socket_cookie_init(struct bpf_builder *builder) {
-    emit(builder, BPF_MOV64_REG(BPF_REG_1, BPF_REG_6));
-    emit(builder, BPF_CALL_FUNC(BPF_FUNC_get_socket_cookie));
-    emit(builder, BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_0, STACK_COOKIE_KEY));
-}
-
 static void emit_socket_cookie_bypass(
     struct bpf_builder *builder,
     int bypass_socket_cookie_map_fd,
@@ -654,8 +656,10 @@ static void emit_socket_cookie_bypass(
     size_t *bypass_jump_count) {
     if (bypass_socket_cookie_map_fd < 0) return;
 
-    emit(builder, BPF_LDX_MEM(BPF_DW, BPF_REG_2, BPF_REG_10, STACK_COOKIE_KEY));
-    size_t no_cookie = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_2, 0, 0));
+    emit(builder, BPF_MOV64_REG(BPF_REG_1, BPF_REG_6));
+    emit(builder, BPF_CALL_FUNC(BPF_FUNC_get_socket_cookie));
+    size_t no_cookie = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_0, 0, 0));
+    emit(builder, BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_0, STACK_COOKIE_KEY));
     emit_ld_map_fd(builder, BPF_REG_1, bypass_socket_cookie_map_fd);
     emit(builder, BPF_MOV64_REG(BPF_REG_2, BPF_REG_10));
     emit(builder, BPF_ALU64_IMM_OP(BPF_ADD, BPF_REG_2, STACK_COOKIE_KEY));
@@ -792,7 +796,8 @@ static void emit_udp_peer_cache_update_v4(
     bypass_jumps[(*bypass_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_7, 0, 0));
     bypass_jumps[(*bypass_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_8, 0, 0));
 
-    emit(builder, BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_10, STACK_COOKIE_KEY));
+    emit(builder, BPF_MOV64_REG(BPF_REG_1, BPF_REG_6));
+    emit(builder, BPF_CALL_FUNC(BPF_FUNC_get_socket_cookie));
     bypass_jumps[(*bypass_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_0, 0, 0));
 
     emit_zero_region(builder, STACK_UDP_PEER_KEY, sizeof(struct sb_ebpf_udp_peer_key));
@@ -824,7 +829,8 @@ static void emit_udp_peer_cache_update_v4mapped(
     bypass_jumps[(*bypass_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_7, 0, 0));
     bypass_jumps[(*bypass_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_8, 0, 0));
 
-    emit(builder, BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_10, STACK_COOKIE_KEY));
+    emit(builder, BPF_MOV64_REG(BPF_REG_1, BPF_REG_6));
+    emit(builder, BPF_CALL_FUNC(BPF_FUNC_get_socket_cookie));
     bypass_jumps[(*bypass_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_0, 0, 0));
 
     emit_zero_region(builder, STACK_UDP_PEER_KEY, sizeof(struct sb_ebpf_udp_peer_key));
@@ -863,7 +869,8 @@ static void emit_udp_peer_cache_update_v6(
     bypass_jumps[(*bypass_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_2, 0, 0));
     bypass_jumps[(*bypass_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_5, 0, 0));
 
-    emit(builder, BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_10, STACK_COOKIE_KEY));
+    emit(builder, BPF_MOV64_REG(BPF_REG_1, BPF_REG_6));
+    emit(builder, BPF_CALL_FUNC(BPF_FUNC_get_socket_cookie));
     bypass_jumps[(*bypass_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_0, 0, 0));
     emit(builder, BPF_LDX_MEM(BPF_W, BPF_REG_4, BPF_REG_6, offsetof(struct bpf_sock_addr, user_ip6) + 12));
     emit(builder, BPF_LDX_MEM(BPF_W, BPF_REG_5, BPF_REG_6, offsetof(struct bpf_sock_addr, user_port)));
@@ -910,7 +917,8 @@ static void emit_udp_peer_cache_restore_v4(
     size_t has_complete_peer = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JNE, BPF_REG_8, 0, 0));
     patch_jump(builder, missing_ip, builder->count);
 
-    emit(builder, BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_10, STACK_COOKIE_KEY));
+    emit(builder, BPF_MOV64_REG(BPF_REG_1, BPF_REG_6));
+    emit(builder, BPF_CALL_FUNC(BPF_FUNC_get_socket_cookie));
     size_t no_cookie = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_0, 0, 0));
     emit_zero_region(builder, STACK_UDP_PEER_KEY, sizeof(struct sb_ebpf_udp_peer_key));
     emit(builder, BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_0, STACK_UDP_PEER_KEY + (int)offsetof(struct sb_ebpf_udp_peer_key, cookie)));
@@ -947,7 +955,8 @@ static void emit_udp_peer_cache_restore_v6(
     size_t has_complete_peer = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JNE, BPF_REG_5, 0, 0));
     patch_jump(builder, missing_addr, builder->count);
 
-    emit(builder, BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_10, STACK_COOKIE_KEY));
+    emit(builder, BPF_MOV64_REG(BPF_REG_1, BPF_REG_6));
+    emit(builder, BPF_CALL_FUNC(BPF_FUNC_get_socket_cookie));
     size_t no_cookie = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_0, 0, 0));
     emit_zero_region(builder, STACK_UDP_PEER_KEY, sizeof(struct sb_ebpf_udp_peer_key));
     emit(builder, BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_0, STACK_UDP_PEER_KEY + (int)offsetof(struct sb_ebpf_udp_peer_key, cookie)));
@@ -994,8 +1003,10 @@ static void emit_udp_connected_token_restore_v4(
     size_t complete_peer = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JNE, BPF_REG_8, 0, 0));
     patch_jump(builder, missing_ip, builder->count);
 
-    emit(builder, BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_10, STACK_COOKIE_KEY));
+    emit(builder, BPF_MOV64_REG(BPF_REG_1, BPF_REG_6));
+    emit(builder, BPF_CALL_FUNC(BPF_FUNC_get_socket_cookie));
     size_t no_cookie = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_0, 0, 0));
+    emit(builder, BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_0, STACK_COOKIE_KEY));
     emit_ld_map_fd(builder, BPF_REG_1, udp_token_map_fd);
     emit(builder, BPF_MOV64_REG(BPF_REG_2, BPF_REG_10));
     emit(builder, BPF_ALU64_IMM_OP(BPF_ADD, BPF_REG_2, STACK_COOKIE_KEY));
@@ -1034,8 +1045,10 @@ static void emit_udp_connected_token_restore_v6(
     size_t complete_peer = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JNE, BPF_REG_5, 0, 0));
     patch_jump(builder, missing_address, builder->count);
 
-    emit(builder, BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_10, STACK_COOKIE_KEY));
+    emit(builder, BPF_MOV64_REG(BPF_REG_1, BPF_REG_6));
+    emit(builder, BPF_CALL_FUNC(BPF_FUNC_get_socket_cookie));
     size_t no_cookie = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_0, 0, 0));
+    emit(builder, BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_0, STACK_COOKIE_KEY));
     emit_ld_map_fd(builder, BPF_REG_1, udp_token_map_fd);
     emit(builder, BPF_MOV64_REG(BPF_REG_2, BPF_REG_10));
     emit(builder, BPF_ALU64_IMM_OP(BPF_ADD, BPF_REG_2, STACK_COOKIE_KEY));
@@ -1629,7 +1642,6 @@ static int build_ipv4_sock_addr_prog(
     size_t allow_jump_count = 0;
 
     emit(&b, BPF_MOV64_REG(BPF_REG_6, BPF_REG_1));
-    emit_socket_cookie_init(&b);
     emit_socket_cookie_bypass(&b, bypass_socket_cookie_map_fd, bypass_jumps, &bypass_jump_count);
     emit_inbound_network_filter(
         &b, config, protocol, protocol_from_context, bypass_jumps, &bypass_jump_count);
@@ -1732,7 +1744,6 @@ static int build_ipv6_sock_addr_prog(
     size_t allow_jump_count = 0;
 
     emit(&b, BPF_MOV64_REG(BPF_REG_6, BPF_REG_1));
-    emit_socket_cookie_init(&b);
     emit_socket_cookie_bypass(&b, bypass_socket_cookie_map_fd, bypass_jumps, &bypass_jump_count);
     emit_inbound_network_filter(
         &b, config, protocol, protocol_from_context, bypass_jumps, &bypass_jump_count);
@@ -1882,7 +1893,6 @@ static int build_ipv4_mapped_ipv6_sock_addr_prog(
     size_t allow_jump_count = 0;
 
     emit(&b, BPF_MOV64_REG(BPF_REG_6, BPF_REG_1));
-    emit_socket_cookie_init(&b);
     emit_socket_cookie_bypass(&b, bypass_socket_cookie_map_fd, bypass_jumps, &bypass_jump_count);
     emit_inbound_network_filter(
         &b, config, protocol, protocol_from_context, bypass_jumps, &bypass_jump_count);
