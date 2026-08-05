@@ -34,11 +34,9 @@ enum sb_ebpf_cgroup_program_kind {
 struct sb_ebpf_cgroup_program_spec {
     enum sb_ebpf_cgroup_program_kind kind;
     bool enabled;
-    int *fd;
     uint8_t protocol;
     bool protocol_from_context;
-    enum bpf_attach_type attach_type;
-    const char *name;
+    struct sb_ebpf_program_descriptor program;
 };
 
 static int build_cgroup_program(
@@ -57,8 +55,8 @@ static int build_cgroup_program(
             spec->protocol,
             spec->protocol_from_context,
             listen_port,
-            spec->attach_type,
-            spec->name,
+            spec->program.attach_type,
+            spec->program.name,
             log_error);
     case SB_EBPF_CGROUP_PROGRAM_IPV6_SOCK_ADDR:
         return build_ipv6_sock_addr_prog(
@@ -68,8 +66,8 @@ static int build_cgroup_program(
             spec->protocol,
             spec->protocol_from_context,
             listen_port,
-            spec->attach_type,
-            spec->name,
+            spec->program.attach_type,
+            spec->program.name,
             log_error);
     case SB_EBPF_CGROUP_PROGRAM_IPV4_MAPPED_SOCK_ADDR:
         return build_ipv4_mapped_ipv6_sock_addr_prog(
@@ -79,13 +77,13 @@ static int build_cgroup_program(
             spec->protocol,
             spec->protocol_from_context,
             listen_port,
-            spec->attach_type,
-            spec->name,
+            spec->program.attach_type,
+            spec->program.name,
             log_error);
     case SB_EBPF_CGROUP_PROGRAM_UDP4_RECVMSG:
-        return build_udp4_recvmsg_prog(config, maps->udp_redirect, spec->name);
+        return build_udp4_recvmsg_prog(config, maps->udp_redirect, spec->program.name);
     case SB_EBPF_CGROUP_PROGRAM_UDP6_RECVMSG:
-        return build_udp6_recvmsg_prog(config, maps->udp_redirect, spec->name);
+        return build_udp6_recvmsg_prog(config, maps->udp_redirect, spec->program.name);
     default:
         errno = EINVAL;
         return -1;
@@ -101,16 +99,19 @@ static bool runtime_has_programs(const struct sb_ebpf_cgroup_runtime *runtime) {
 }
 
 static void close_runtime_programs(struct sb_ebpf_cgroup_runtime *runtime) {
-    (void)close_fd(&runtime->socket_release_prog_fd);
-    (void)close_fd(&runtime->udp6_v4mapped_recvmsg_prog_fd);
-    (void)close_fd(&runtime->udp6_recvmsg_prog_fd);
-    (void)close_fd(&runtime->udp4_recvmsg_prog_fd);
-    (void)close_fd(&runtime->udp6_v4mapped_sendmsg_prog_fd);
-    (void)close_fd(&runtime->udp6_sendmsg_prog_fd);
-    (void)close_fd(&runtime->udp4_sendmsg_prog_fd);
-    (void)close_fd(&runtime->connect6_v4mapped_prog_fd);
-    (void)close_fd(&runtime->connect6_prog_fd);
-    (void)close_fd(&runtime->connect4_prog_fd);
+    int *program_fds[] = {
+        &runtime->socket_release_prog_fd,
+        &runtime->udp6_v4mapped_recvmsg_prog_fd,
+        &runtime->udp6_recvmsg_prog_fd,
+        &runtime->udp4_recvmsg_prog_fd,
+        &runtime->udp6_v4mapped_sendmsg_prog_fd,
+        &runtime->udp6_sendmsg_prog_fd,
+        &runtime->udp4_sendmsg_prog_fd,
+        &runtime->connect6_v4mapped_prog_fd,
+        &runtime->connect6_prog_fd,
+        &runtime->connect4_prog_fd,
+    };
+    (void)sb_ebpf_close_fds(program_fds, ARRAY_SIZE(program_fds));
 }
 
 static int load_cgroup_program_set(
@@ -180,39 +181,50 @@ static int load_cgroup_program_set(
     }
 
     struct sb_ebpf_cgroup_program_spec programs[] = {
-        {SB_EBPF_CGROUP_PROGRAM_IPV4_SOCK_ADDR, enable_ipv4, &runtime->connect4_prog_fd,
-         SB_EBPF_PROTO_TCP, true, BPF_CGROUP_INET4_CONNECT, "sb_ebpf_conn4"},
-        {SB_EBPF_CGROUP_PROGRAM_IPV4_SOCK_ADDR, enable_ipv4 && enable_udp, &runtime->udp4_sendmsg_prog_fd,
-         SB_EBPF_PROTO_UDP, false, BPF_CGROUP_UDP4_SENDMSG, "sb_ebpf_udp4"},
-        {SB_EBPF_CGROUP_PROGRAM_UDP4_RECVMSG, enable_ipv4 && enable_udp, &runtime->udp4_recvmsg_prog_fd,
-         0U, false, 0, "sb_ebpf_urcv4"},
-        {SB_EBPF_CGROUP_PROGRAM_IPV6_SOCK_ADDR, enable_ipv6, &runtime->connect6_prog_fd,
-         SB_EBPF_PROTO_TCP, true, BPF_CGROUP_INET6_CONNECT, "sb_ebpf_conn6"},
-        {SB_EBPF_CGROUP_PROGRAM_IPV6_SOCK_ADDR, enable_ipv6 && enable_udp, &runtime->udp6_sendmsg_prog_fd,
-         SB_EBPF_PROTO_UDP, false, BPF_CGROUP_UDP6_SENDMSG, "sb_ebpf_udp6"},
-        {SB_EBPF_CGROUP_PROGRAM_UDP6_RECVMSG, enable_ipv6 && enable_udp, &runtime->udp6_recvmsg_prog_fd,
-         0U, false, 0, "sb_ebpf_urcv6"},
-        {SB_EBPF_CGROUP_PROGRAM_IPV4_MAPPED_SOCK_ADDR, !enable_ipv6, &runtime->connect6_v4mapped_prog_fd,
-         SB_EBPF_PROTO_TCP, true, BPF_CGROUP_INET6_CONNECT, "sb_ebpf_c6v4m"},
+        {SB_EBPF_CGROUP_PROGRAM_IPV4_SOCK_ADDR, enable_ipv4, SB_EBPF_PROTO_TCP, true,
+         {"sb_ebpf_conn4", BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_INET4_CONNECT,
+          &runtime->connect4_prog_fd}},
+        {SB_EBPF_CGROUP_PROGRAM_IPV4_SOCK_ADDR, enable_ipv4 && enable_udp, SB_EBPF_PROTO_UDP, false,
+         {"sb_ebpf_udp4", BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_UDP4_SENDMSG,
+          &runtime->udp4_sendmsg_prog_fd}},
+        {SB_EBPF_CGROUP_PROGRAM_UDP4_RECVMSG, enable_ipv4 && enable_udp, 0U, false,
+         {"sb_ebpf_urcv4", BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_UDP4_RECVMSG,
+          &runtime->udp4_recvmsg_prog_fd}},
+        {SB_EBPF_CGROUP_PROGRAM_IPV6_SOCK_ADDR, enable_ipv6, SB_EBPF_PROTO_TCP, true,
+         {"sb_ebpf_conn6", BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_INET6_CONNECT,
+          &runtime->connect6_prog_fd}},
+        {SB_EBPF_CGROUP_PROGRAM_IPV6_SOCK_ADDR, enable_ipv6 && enable_udp, SB_EBPF_PROTO_UDP, false,
+         {"sb_ebpf_udp6", BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_UDP6_SENDMSG,
+          &runtime->udp6_sendmsg_prog_fd}},
+        {SB_EBPF_CGROUP_PROGRAM_UDP6_RECVMSG, enable_ipv6 && enable_udp, 0U, false,
+         {"sb_ebpf_urcv6", BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_UDP6_RECVMSG,
+          &runtime->udp6_recvmsg_prog_fd}},
+        {SB_EBPF_CGROUP_PROGRAM_IPV4_MAPPED_SOCK_ADDR, !enable_ipv6, SB_EBPF_PROTO_TCP, true,
+         {"sb_ebpf_c6v4m", BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_INET6_CONNECT,
+          &runtime->connect6_v4mapped_prog_fd}},
         {SB_EBPF_CGROUP_PROGRAM_IPV4_MAPPED_SOCK_ADDR, !enable_ipv6 && enable_udp,
-         &runtime->udp6_v4mapped_sendmsg_prog_fd,
-         SB_EBPF_PROTO_UDP, false, BPF_CGROUP_UDP6_SENDMSG, "sb_ebpf_u6v4m"},
-        {SB_EBPF_CGROUP_PROGRAM_UDP6_RECVMSG, !enable_ipv6 && enable_udp,
-         &runtime->udp6_v4mapped_recvmsg_prog_fd,
-         0U, false, 0, "sb_ebpf_ur6v4m"},
+         SB_EBPF_PROTO_UDP, false,
+         {"sb_ebpf_u6v4m", BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_UDP6_SENDMSG,
+          &runtime->udp6_v4mapped_sendmsg_prog_fd}},
+        {SB_EBPF_CGROUP_PROGRAM_UDP6_RECVMSG, !enable_ipv6 && enable_udp, 0U, false,
+         {"sb_ebpf_ur6v4m", BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_UDP6_RECVMSG,
+          &runtime->udp6_v4mapped_recvmsg_prog_fd}},
     };
     bool program_load_failed = false;
     for (size_t index = 0; index < ARRAY_SIZE(programs); ++index) {
         struct sb_ebpf_cgroup_program_spec *program = &programs[index];
         if (!program->enabled) continue;
-        *program->fd = build_cgroup_program(
+        *program->program.fd = build_cgroup_program(
             program,
             &config,
             &maps,
             self_tgid,
             listen_port,
             log_error);
-        if (*program->fd < 0) program_load_failed = true;
+        if (*program->program.fd < 0) {
+            sb_ebpf_set_error_stage(runtime->error_stage, program->program.name);
+            program_load_failed = true;
+        }
     }
     if (enable_udp && runtime->socket_release_supported) {
         runtime->socket_release_prog_fd = build_socket_release_prog(
@@ -221,12 +233,16 @@ static int load_cgroup_program_set(
             runtime->udp_peer_map_fd,
             runtime->bypass_socket_cookie_map_fd,
             "sb_ebpf_rel");
+        if (runtime->socket_release_prog_fd < 0) {
+            sb_ebpf_set_error_stage(runtime->error_stage, "sb_ebpf_rel");
+        }
     }
     if (program_load_failed ||
         (enable_udp && runtime->socket_release_supported &&
          runtime->socket_release_prog_fd < 0)) {
         goto load_fail;
     }
+    sb_ebpf_set_error_stage(runtime->error_stage, NULL);
     return 0;
 
 load_fail:
@@ -252,6 +268,7 @@ int sb_ebpf_cgroup_load_programs(
     uint32_t redirect_ipv6_prefix_bits) {
     bool try_tgid = self_tgid != 0U;
     if (!try_tgid) {
+        sb_ebpf_set_error_stage(runtime->error_stage, "socket bypass map");
         runtime->bypass_socket_cookie_map_fd = create_bypass_socket_cookie_map(
             runtime->socket_bypass_map_capacity);
         if (runtime->bypass_socket_cookie_map_fd < 0) goto load_fail;
@@ -273,6 +290,7 @@ int sb_ebpf_cgroup_load_programs(
         return 0;
     }
     if (try_tgid) {
+        sb_ebpf_set_error_stage(runtime->error_stage, "socket bypass fallback map");
         runtime->bypass_socket_cookie_map_fd = create_bypass_socket_cookie_map(
             runtime->socket_bypass_map_capacity);
         if (runtime->bypass_socket_cookie_map_fd < 0) goto load_fail;

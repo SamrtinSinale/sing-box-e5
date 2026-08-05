@@ -13,7 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func validateMapCapacity(capacity CgroupMapCapacity) error {
+func validateCgroupMapCapacity(capacity CgroupMapCapacity) error {
 	for _, entry := range []struct {
 		name  string
 		value uint32
@@ -22,8 +22,8 @@ func validateMapCapacity(capacity CgroupMapCapacity) error {
 		{"udp_redirect", capacity.UDPRedirect},
 		{"socket_bypass", capacity.SocketBypass},
 	} {
-		if entry.value == 0 || entry.value > MaxConfigurableMapCapacity {
-			return E.New("invalid eBPF ", entry.name, " map capacity: ", entry.value)
+		if err := validateMapCapacity("eBPF "+entry.name, entry.value); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -73,8 +73,8 @@ func (b *CgroupBackend) UpdateBypassCIDR(prefixes []netip.Prefix) (bool, error) 
 	}
 	b.access.Lock()
 	defer b.access.Unlock()
-	if b.runtime == nil {
-		return false, errBackendClosed
+	if err = b.health.requireUsable(b.runtime != nil); err != nil {
+		return false, err
 	}
 	if b.bypassIPv4CIDRMapFD < 0 {
 		ipv4Prefixes = nil
@@ -91,6 +91,9 @@ func (b *CgroupBackend) UpdateBypassCIDR(prefixes []netip.Prefix) (bool, error) 
 		"bypass CIDR eBPF",
 	)
 	if err != nil {
+		if policyRollbackFailed(err) {
+			return false, E.Errors(err, b.health.invalidate("cgroup", "bypass CIDR policy"))
+		}
 		return false, err
 	}
 	b.bypassIPv4CIDR = slices.Clone(ipv4Prefixes)
@@ -138,7 +141,10 @@ func replaceDualStackCIDRPolicy(
 		if ipv6Changed {
 			rollbackErr := replaceBypassCIDRPolicyMap(ipv6MapFD, next.ipv6, current.ipv6)
 			if rollbackErr != nil {
-				updateErr = E.Errors(updateErr, E.Cause(rollbackErr, "rollback ", scope, "IPv6 ", policyName, " map"))
+				updateErr = policyUpdateError(
+					updateErr,
+					E.Cause(rollbackErr, "rollback ", scope, "IPv6 ", policyName, " map"),
+				)
 			}
 		}
 		return false, updateErr
@@ -166,7 +172,7 @@ func replaceBypassCIDRPolicyMap(
 			continue
 		}
 		if err != nil {
-			return E.Errors(err, rollbackBypassCIDRPolicyMap(mapFD, added, nil))
+			return policyUpdateError(err, rollbackBypassCIDRPolicyMap(mapFD, added, nil))
 		}
 		added = append(added, prefix)
 	}
@@ -177,7 +183,7 @@ func replaceBypassCIDRPolicyMap(
 			continue
 		}
 		if err != nil {
-			return E.Errors(err, rollbackBypassCIDRPolicyMap(mapFD, added, removed))
+			return policyUpdateError(err, rollbackBypassCIDRPolicyMap(mapFD, added, removed))
 		}
 		removed = append(removed, prefix)
 	}

@@ -3,11 +3,14 @@
 package ebpf
 
 import (
+	"errors"
 	"runtime"
 	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	E "github.com/sagernet/sing/common/exceptions"
 )
 
 const (
@@ -94,3 +97,51 @@ func readSocketCookie(fd uintptr) (uint64, error) {
 }
 
 var errBackendClosed = syscall.EBADF
+
+func validateMapCapacity(name string, capacity uint32) error {
+	if capacity == 0 || capacity > MaxConfigurableMapCapacity {
+		return E.New("invalid ", name, " map capacity: ", capacity)
+	}
+	return nil
+}
+
+type backendHealth struct {
+	rebuildRequired error
+}
+
+func (h *backendHealth) requireUsable(runtimeAvailable bool) error {
+	if !runtimeAvailable {
+		return errBackendClosed
+	}
+	return h.rebuildRequired
+}
+
+func (h *backendHealth) invalidate(scope string, operation string) error {
+	h.rebuildRequired = E.New(scope, " backend requires rebuild after failed ", operation, " rollback")
+	return h.rebuildRequired
+}
+
+type policyRollbackError struct {
+	updateErr   error
+	rollbackErr error
+}
+
+func (e *policyRollbackError) Error() string {
+	return errors.Join(e.updateErr, e.rollbackErr).Error()
+}
+
+func (e *policyRollbackError) Unwrap() []error {
+	return []error{e.updateErr, e.rollbackErr}
+}
+
+func policyUpdateError(updateErr error, rollbackErr error) error {
+	if rollbackErr == nil {
+		return updateErr
+	}
+	return &policyRollbackError{updateErr: updateErr, rollbackErr: rollbackErr}
+}
+
+func policyRollbackFailed(err error) bool {
+	var rollbackErr *policyRollbackError
+	return errors.As(err, &rollbackErr)
+}

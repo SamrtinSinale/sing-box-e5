@@ -13,6 +13,7 @@
 #define SB_EBPF_MAX_POLICY_MAP_ENTRIES 4096U
 #define SB_EBPF_MAX_BYPASS_CIDR_MAP_ENTRIES 65536U
 #define SB_EBPF_MAX_CONFIGURABLE_MAP_ENTRIES 1048576U
+#define SB_EBPF_ERROR_STAGE_SIZE 64U
 #define SB_EBPF_ORIGINAL_DST_FLAG_CONNECTED_UDP 1U
 
 #define SB_EBPF_PROTO_TCP 6U
@@ -103,7 +104,25 @@ struct sb_ebpf_cgroup_config {
     uint32_t redirect_ipv6_prefix_bits;
 };
 
+struct sb_ebpf_map_spec {
+    const char *name;
+    enum bpf_map_type type;
+    uint32_t key_size;
+    uint32_t value_size;
+    uint32_t max_entries;
+    uint32_t flags;
+    int *fd;
+};
+
+struct sb_ebpf_program_descriptor {
+    const char *name;
+    enum bpf_prog_type type;
+    enum bpf_attach_type attach_type;
+    int *fd;
+};
+
 struct sb_ebpf_cgroup_runtime {
+    char error_stage[SB_EBPF_ERROR_STAGE_SIZE];
     int cgroup_fd;
     int tcp_redirect_map_fd;
     int udp_redirect_map_fd;
@@ -133,6 +152,7 @@ struct sb_ebpf_cgroup_runtime {
 };
 
 struct sb_ebpf_shared_network_runtime {
+    char error_stage[SB_EBPF_ERROR_STAGE_SIZE];
     int control_map_fd;
     int original_to_token_map_fd;
     int bypass_flow_map_fd;
@@ -200,6 +220,14 @@ int sb_ebpf_create_map(
     uint32_t value_size,
     uint32_t max_entries,
     uint32_t flags);
+bool sb_ebpf_map_capacity_valid(uint32_t capacity);
+int sb_ebpf_create_maps(
+    const struct sb_ebpf_map_spec *specs,
+    size_t spec_count,
+    const char **failed_name);
+int sb_ebpf_close_fd(int *fd);
+int sb_ebpf_close_fds(int **fds, size_t fd_count);
+void sb_ebpf_set_error_stage(char *destination, const char *stage);
 int sb_ebpf_load_prog(
     const struct bpf_insn *insns,
     size_t insn_count,

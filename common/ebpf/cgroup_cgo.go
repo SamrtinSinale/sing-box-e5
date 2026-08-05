@@ -83,6 +83,11 @@ static int singbox_ebpf_cgroup_close(
 	if (result != 0) *saved_errno = errno;
 	return result;
 }
+
+static const char *singbox_ebpf_cgroup_error_stage(
+	const struct sb_ebpf_cgroup_runtime *runtime) {
+	return runtime == NULL ? NULL : runtime->error_stage;
+}
 */
 import "C"
 
@@ -101,6 +106,7 @@ import (
 
 type CgroupBackend struct {
 	access               sync.RWMutex
+	health               backendHealth
 	lookupAndDeleteMode  atomic.Int32
 	runtime              *C.struct_sb_ebpf_cgroup_runtime
 	tcpRedirectMapFD     int
@@ -130,7 +136,7 @@ func PrepareCgroup(config CgroupConfig) (*CgroupBackend, error) {
 	redirectIPv6 := config.RedirectIPv6
 	mapCapacity := config.MapCapacity
 	policy := config.Policy
-	if err := validateMapCapacity(mapCapacity); err != nil {
+	if err := validateCgroupMapCapacity(mapCapacity); err != nil {
 		return nil, err
 	}
 	if redirectIPv4.IsValid() {
@@ -186,7 +192,7 @@ func PrepareCgroup(config CgroupConfig) (*CgroupBackend, error) {
 		}
 	}
 	memlockErr := raiseMemlockLimit()
-	if err := checkKernelCapabilities(cgroupPath); err != nil {
+	if err := checkKernelCapabilities("cgroup", cgroupPath); err != nil {
 		if memlockErr != nil {
 			return nil, E.Errors(err, E.Cause(memlockErr, "remove memlock limit"))
 		}
@@ -218,12 +224,13 @@ func PrepareCgroup(config CgroupConfig) (*CgroupBackend, error) {
 		&savedErrno,
 	) != 0 {
 		prepareErrno := syscall.Errno(savedErrno)
+		errorStage := C.GoString(C.singbox_ebpf_cgroup_error_stage(runtimeState))
 		var prepareErr error = prepareErrno
 		if memlockErr != nil && (prepareErrno == unix.ENOMEM || prepareErrno == unix.EPERM) {
 			prepareErr = E.Cause(prepareErr, "memlock limit could not be removed: ", memlockErr)
 		}
 		C.free(unsafe.Pointer(runtimeState))
-		return nil, eBPFOperationError("prepare eBPF inbound", prepareErr)
+		return nil, eBPFBackendOperationError("prepare eBPF inbound", errorStage, prepareErr)
 	}
 	backend := &CgroupBackend{
 		runtime:             runtimeState,
@@ -284,13 +291,15 @@ func raiseMemlockLimit() error {
 	return unlimitedErr
 }
 
-func checkKernelCapabilities(cgroupPath string) error {
-	var fileSystem unix.Statfs_t
-	if err := unix.Statfs(cgroupPath, &fileSystem); err != nil {
-		return E.Cause(err, "check eBPF cgroup2 mount")
-	}
-	if fileSystem.Type != unix.CGROUP2_SUPER_MAGIC {
-		return E.New("eBPF inbound is not supported: ", cgroupPath, " is not a cgroup2 mount")
+func checkKernelCapabilities(scope string, cgroupPath string) error {
+	if cgroupPath != "" {
+		var fileSystem unix.Statfs_t
+		if err := unix.Statfs(cgroupPath, &fileSystem); err != nil {
+			return E.Cause(err, "check ", scope, " eBPF cgroup2 mount")
+		}
+		if fileSystem.Type != unix.CGROUP2_SUPER_MAGIC {
+			return E.New("eBPF inbound is not supported: ", cgroupPath, " is not a cgroup2 mount")
+		}
 	}
 
 	attribute := mapCreateAttr{
@@ -306,12 +315,19 @@ func checkKernelCapabilities(cgroupPath string) error {
 		unsafe.Sizeof(attribute),
 	)
 	if errno != 0 {
-		return eBPFOperationError("probe BPF_MAP_CREATE", errno)
+		return eBPFOperationError("probe "+scope+" BPF_MAP_CREATE", errno)
 	}
 	if err := unix.Close(int(fd)); err != nil {
 		return E.Cause(err, "close eBPF capability probe map")
 	}
 	return nil
+}
+
+func eBPFBackendOperationError(operation string, stage string, err error) error {
+	if stage != "" {
+		operation += ": " + stage
+	}
+	return eBPFOperationError(operation, err)
 }
 
 func eBPFOperationError(operation string, err error) error {
@@ -397,8 +413,8 @@ func (b *CgroupBackend) loadPrograms(listenerPort uint16, selfTGID uint32) error
 	}
 	b.access.Lock()
 	defer b.access.Unlock()
-	if b.runtime == nil {
-		return errBackendClosed
+	if err := b.health.requireUsable(b.runtime != nil); err != nil {
+		return err
 	}
 	var redirectIPv4Bytes [4]byte
 	var redirectIPv4Pointer *C.uint8_t
@@ -431,7 +447,11 @@ func (b *CgroupBackend) loadPrograms(listenerPort uint16, selfTGID uint32) error
 		redirectIPv6Bits,
 		&savedErrno,
 	) != 0 {
-		return eBPFOperationError("load eBPF inbound programs", syscall.Errno(savedErrno))
+		return eBPFBackendOperationError(
+			"load eBPF inbound programs",
+			C.GoString(C.singbox_ebpf_cgroup_error_stage(b.runtime)),
+			syscall.Errno(savedErrno),
+		)
 	}
 	b.socketBypassMapFD = int(b.runtime.bypass_socket_cookie_map_fd)
 	if b.runtime.self_bypass_tgid {
@@ -463,8 +483,8 @@ func (b *CgroupBackend) UpdateIPv6Available(available bool) (bool, error) {
 }
 
 func (b *CgroupBackend) updateIPv6AvailableLocked(available bool) (bool, error) {
-	if b.runtime == nil {
-		return false, errBackendClosed
+	if err := b.health.requireUsable(b.runtime != nil); err != nil {
+		return false, err
 	}
 	if !b.autoIPv6 || b.ipv6AvailableMapFD < 0 {
 		return false, nil
@@ -509,12 +529,16 @@ func (b *CgroupBackend) Attach() error {
 	}
 	b.access.Lock()
 	defer b.access.Unlock()
-	if b.runtime == nil {
-		return errBackendClosed
+	if err := b.health.requireUsable(b.runtime != nil); err != nil {
+		return err
 	}
 	var savedErrno C.int
 	if C.singbox_ebpf_cgroup_attach(b.runtime, &savedErrno) != 0 {
-		return eBPFOperationError("attach eBPF inbound", syscall.Errno(savedErrno))
+		return eBPFBackendOperationError(
+			"attach eBPF inbound",
+			C.GoString(C.singbox_ebpf_cgroup_error_stage(b.runtime)),
+			syscall.Errno(savedErrno),
+		)
 	}
 	return nil
 }

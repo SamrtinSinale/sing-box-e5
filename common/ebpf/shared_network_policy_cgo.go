@@ -86,6 +86,9 @@ func (b *SharedNetworkBackend) UpdateBypassCIDR(prefixes []netip.Prefix) (bool, 
 		"bypass CIDR",
 	)
 	if err != nil {
+		if policyRollbackFailed(err) {
+			return false, b.invalidateLocked("bypass CIDR policy", err)
+		}
 		return false, err
 	}
 	oldIPv4 := b.bypassIPv4CIDR
@@ -105,7 +108,10 @@ func (b *SharedNetworkBackend) UpdateBypassCIDR(prefixes []netip.Prefix) (bool, 
 			"bypass CIDR",
 		)
 		if rollbackErr != nil {
-			return false, E.Errors(err, b.invalidateLocked("bypass CIDR policy", rollbackErr))
+			return false, b.invalidateLocked(
+				"bypass CIDR policy",
+				E.Errors(err, E.Cause(rollbackErr, "rollback bypass CIDR maps")),
+			)
 		}
 		return false, err
 	}
@@ -145,6 +151,9 @@ func (b *SharedNetworkBackend) UpdateHostAddresses(addresses []netip.Addr) error
 		"host",
 	)
 	if err != nil {
+		if policyRollbackFailed(err) {
+			return b.invalidateLocked("host address policy", err)
+		}
 		return err
 	}
 	oldIPv4 := b.hostIPv4
@@ -164,7 +173,10 @@ func (b *SharedNetworkBackend) UpdateHostAddresses(addresses []netip.Addr) error
 			"host address",
 		)
 		if rollbackErr != nil {
-			return E.Errors(err, b.invalidateLocked("host address policy", rollbackErr))
+			return b.invalidateLocked(
+				"host address policy",
+				E.Errors(err, E.Cause(rollbackErr, "rollback host address maps")),
+			)
 		}
 		return err
 	}
