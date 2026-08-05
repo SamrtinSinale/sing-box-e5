@@ -72,17 +72,22 @@ func (i *Inbound) Start(stage adapter.StartStage) error {
 				)
 			}
 			bypassIPv4Count, bypassIPv6Count := backend.BypassCIDRCount()
+			selfBypassMode := backend.SelfBypassMode()
+			socketBypassCapacity := i.cgroupMapCapacity.SocketBypass
+			if selfBypassMode == "tgid" {
+				socketBypassCapacity = 0
+			}
 			i.logger.Info(
 				"eBPF local cgroup interception ready: cgroup=", backend.CgroupPath(),
 				", redirect_listener_port=", i.listeners.selectedPort(),
 				", dns_mode=", i.dnsMode,
 				", cgroup_ipv6_mode=", i.cgroupIPv6Mode,
-				", self_bypass=", backend.SelfBypassMode(),
+				", self_bypass=", selfBypassMode,
 				", redirect_address=[", strings.Join(i.redirectAddressStrings(), ", "), "]",
 				", bypass_cidr={ipv4:", bypassIPv4Count, ", ipv6:", bypassIPv6Count, "}",
 				", map_capacity={tcp_redirect:", i.cgroupMapCapacity.TCPRedirect,
 				", udp_redirect:", i.cgroupMapCapacity.UDPRedirect,
-				", socket_bypass:", i.cgroupMapCapacity.SocketBypass, "}",
+				", socket_bypass:", socketBypassCapacity, "}",
 				", programs=[", strings.Join(backend.AttachedPrograms(), ", "), "]",
 			)
 		}
