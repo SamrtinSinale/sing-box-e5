@@ -429,11 +429,12 @@ static void emit_ipv4_mapped_redirect_from_regs(
     size_t *drop_jump_count,
     size_t *allow_jumps,
     size_t *allow_jump_count) {
-    emit_udp_flow_cache_restore_v4mapped(
+    emit_udp_flow_cache_restore_v4(
         builder,
         protocol == SB_EBPF_PROTO_UDP && !protocol_from_context ? udp_flow_map_fd : -1,
         listen_port,
         config->udp_timeout_seconds,
+        true,
         allow_jumps,
         allow_jump_count);
     size_t dns_hijack_jumps[2];
@@ -465,14 +466,10 @@ static void emit_ipv4_mapped_redirect_from_regs(
         emit_udp_flow_bypass_cache_update_v4(builder, udp_flow_map_fd, true);
         allow_jumps[(*allow_jump_count)++] = emit_jump(
             builder, BPF_JMP_IMM_OP(BPF_JA, 0, 0, 0));
-        for (size_t index = 0; index < udp_cidr_bypass_jump_count; ++index) {
-            patch_jump(builder, udp_cidr_bypass_jumps[index], cache_bypass);
-        }
+        patch_jumps(builder, udp_cidr_bypass_jumps, udp_cidr_bypass_jump_count, cache_bypass);
         patch_jump(builder, continue_interception, builder->count);
     }
-    for (size_t i = 0; i < dns_hijack_jump_count; ++i) {
-        patch_jump(builder, dns_hijack_jumps[i], builder->count);
-    }
+    patch_jumps(builder, dns_hijack_jumps, dns_hijack_jump_count, builder->count);
     emit_ipv4_mapped_redirect_update_and_rewrite_by_protocol(
         builder,
         config,
@@ -517,9 +514,7 @@ static bool emit_ipv4_mapped_ipv6_branch(
         emit(builder, BPF_MOV64_REG(BPF_REG_7, BPF_REG_4));
         emit(builder, BPF_MOV64_REG(BPF_REG_8, BPF_REG_5));
         mapped_jumps[mapped_jump_count++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JA, 0, 0, 0));
-        for (size_t i = 0; i < continue_jump_count; ++i) {
-            patch_jump(builder, continue_jumps[i], builder->count);
-        }
+        patch_jumps(builder, continue_jumps, continue_jump_count, builder->count);
         continue_jump_count = 0;
 
         emit(builder, BPF_MOV64_REG(BPF_REG_2, BPF_REG_7));
@@ -557,9 +552,7 @@ static bool emit_ipv4_mapped_ipv6_branch(
     }
 
     size_t mapped_label = builder->count;
-    for (size_t i = 0; i < mapped_jump_count; ++i) {
-        patch_jump(builder, mapped_jumps[i], mapped_label);
-    }
+    patch_jumps(builder, mapped_jumps, mapped_jump_count, mapped_label);
     emit_ipv4_mapped_redirect_from_regs(
         builder,
         config,
@@ -578,8 +571,6 @@ static bool emit_ipv4_mapped_ipv6_branch(
         allow_jumps,
         allow_jump_count);
     size_t continue_label = builder->count;
-    for (size_t i = 0; i < continue_jump_count; ++i) {
-        patch_jump(builder, continue_jumps[i], continue_label);
-    }
+    patch_jumps(builder, continue_jumps, continue_jump_count, continue_label);
     return true;
 }
