@@ -47,6 +47,8 @@ eBPF 入站通过 cgroup socket-address 程序拦截本机产生的 TCP 和 UDP 
     "include_interface": [],
     "include_source_cidr": [],
     "exclude_source_cidr": [],
+    "include_mac_address": [],
+    "exclude_mac_address": [],
     "tc_priority": 1,
     "map_capacity": 65536
   }
@@ -385,6 +387,30 @@ sing-box 用户态。绕过决定会在 LRU bypass-flow map 中缓存至流生�
 需要重启。源地址筛选先于 DNS 劫持执行，因此 include 策略之外客户端的 DNS 也会
 绕过 shared-network。
 
+#### shared_network.include_mac_address
+
+允许进入 `shared_network` 代理路径的 48 位客户端源 MAC 地址列表。
+
+TC ingress 程序直接从以太网头读取源 MAC，不依赖 ARP 或 NDP 邻居表。Linux 上的
+Wi-Fi AP 设备通常会在 TC 层提供以太网形式的数据帧，因此这里取得的是已关联的热点
+客户端地址。该地址还会作为 `source_mac_address` metadata 传给 sing-box 路由与 DNS
+规则。
+
+非空时，其他 MAC 的流量会在源 CIDR 和 DNS 处理前绕过 shared-network。MAC 同时是
+缓存流键的一部分，因此其他设备不能仅通过复用相同客户端 IP 和端口继承已有 token
+或绕过决定。
+
+#### shared_network.exclude_mac_address
+
+需要绕过 `shared_network` 的 48 位客户端源 MAC 地址列表。
+
+exclude 优先于 include。MAC 筛选先于源 CIDR 筛选，二者又都先于 DNS 劫持。决定会
+缓存至流生命周期结束，MAC map 在入站启动时写入；修改这些字段后需要重启入站。
+
+MAC 筛选只能标识直接相连的二层设备；客户端位于其他网桥或路由器之后时，看到的可能
+是中间设备的 MAC。MAC 也可能被随机化或伪造，因此此功能适合流量选择，不能作为身份
+认证机制。该功能只适用于 `shared_network`，不适用于本机 cgroup 拦截。
+
 #### shared_network.tc_priority
 
 shared-network ingress 与 egress 程序使用的 TC filter 优先级。
@@ -401,6 +427,9 @@ filter 也可能在 shared-network 看到流量前将其消费或重定向。
 避免较早关闭的路由连接或 UDP NAT 会话删除仍被同一 token 的其他使用者依赖的状态。
 最后一个引用释放时，才会一并删除原目标到令牌、回包转换及 listener 查询三张 map
 中的条目。
+
+客户端源 MAC 也包含在原目标键中。TCP 握手未完成、因而始终未被用户态接管的条目会
+在两分钟后由有界后台扫描回收；已有 flow 引用的活跃路由连接不会被该扫描删除。
 
 另有一张 LRU map 用于在规则集重载前后固定 CIDR 绕过决策。被绕过的 TCP 流会保持
 原决策，直到相同四元组以不同 SYN 序列号建立新连接，或其非活跃条目因 map 压力被

@@ -74,6 +74,8 @@ type SharedNetworkBackend struct {
 	includeSourceIPv6     []netip.Prefix
 	excludeSourceIPv4     []netip.Prefix
 	excludeSourceIPv6     []netip.Prefix
+	includeSourceMAC      []MACAddress
+	excludeSourceMAC      []MACAddress
 }
 
 func PrepareSharedNetwork(cgroupBackend *CgroupBackend, config SharedNetworkConfig) (*SharedNetworkBackend, error) {
@@ -194,6 +196,10 @@ func PrepareSharedNetwork(cgroupBackend *CgroupBackend, config SharedNetworkConf
 		backend.control.TokenIPv6PrefixBits = uint8(redirectIPv6.Bits())
 	}
 	if err = backend.initializeSourceCIDRPolicy(config.IncludeSourceCIDR, config.ExcludeSourceCIDR); err != nil {
+		_ = backend.Close()
+		return nil, err
+	}
+	if err = backend.initializeSourceMACPolicy(config.IncludeSourceMAC, config.ExcludeSourceMAC); err != nil {
 		_ = backend.Close()
 		return nil, err
 	}
@@ -322,6 +328,8 @@ func (b *SharedNetworkBackend) Close() error {
 		b.includeSourceIPv6 = nil
 		b.excludeSourceIPv4 = nil
 		b.excludeSourceIPv6 = nil
+		b.includeSourceMAC = nil
+		b.excludeSourceMAC = nil
 		clear(b.flowReferences)
 	}
 	if result != 0 {

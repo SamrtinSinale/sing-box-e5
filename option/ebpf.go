@@ -39,6 +39,8 @@ type EBPFSharedNetworkOptions struct {
 	IncludeInterface  badoption.Listable[string]       `json:"include_interface,omitempty"`
 	IncludeSourceCIDR badoption.Listable[netip.Prefix] `json:"include_source_cidr,omitempty"`
 	ExcludeSourceCIDR badoption.Listable[netip.Prefix] `json:"exclude_source_cidr,omitempty"`
+	IncludeMACAddress badoption.Listable[string]       `json:"include_mac_address,omitempty"`
+	ExcludeMACAddress badoption.Listable[string]       `json:"exclude_mac_address,omitempty"`
 	TCPriority        EBPFTCPriority                   `json:"tc_priority,omitempty"`
 	MapCapacity       *EBPFMapCapacity                 `json:"map_capacity,omitempty"`
 }

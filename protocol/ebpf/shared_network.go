@@ -55,6 +55,8 @@ func (s *sharedNetwork) Start(cgroupBackend *ECommon.CgroupBackend) error {
 		RedirectIPv6:      s.inbound.redirectIPv6Prefix,
 		IncludeSourceCIDR: s.inbound.sharedNetworkOptions.IncludeSourceCIDR,
 		ExcludeSourceCIDR: s.inbound.sharedNetworkOptions.ExcludeSourceCIDR,
+		IncludeSourceMAC:  s.inbound.sharedNetworkIncludeMAC,
+		ExcludeSourceMAC:  s.inbound.sharedNetworkExcludeMAC,
 		MapCapacity:       s.mapCapacity,
 		UDPTimeout:        s.inbound.udpTimeout,
 	})
@@ -92,6 +94,8 @@ func (s *sharedNetwork) Start(cgroupBackend *ECommon.CgroupBackend) error {
 		", bypass_maps=", bypassMapSource,
 		", source_cidr={include:", len(s.inbound.sharedNetworkOptions.IncludeSourceCIDR),
 		", exclude:", len(s.inbound.sharedNetworkOptions.ExcludeSourceCIDR), "}",
+		", source_mac={include:", len(s.inbound.sharedNetworkIncludeMAC),
+		", exclude:", len(s.inbound.sharedNetworkExcludeMAC), "}",
 		", tc_priority=", s.tcPriority,
 		", map_capacity=", s.mapCapacity,
 		", programs=[tc/ingress, tc/egress]",

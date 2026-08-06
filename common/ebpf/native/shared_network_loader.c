@@ -18,6 +18,8 @@ struct shared_network_map_context {
     int include_source_ipv6_map_fd;
     int exclude_source_ipv4_map_fd;
     int exclude_source_ipv6_map_fd;
+    int include_source_mac_map_fd;
+    int exclude_source_mac_map_fd;
     int bypass_ipv4_map_fd;
     int bypass_ipv6_map_fd;
     int scratch_map_fd;
@@ -37,6 +39,8 @@ static int shared_network_object_map_fd(const char *name, void *context) {
         MAP_BINDING("shared_include_source_ipv6", include_source_ipv6_map_fd),
         MAP_BINDING("shared_exclude_source_ipv4", exclude_source_ipv4_map_fd),
         MAP_BINDING("shared_exclude_source_ipv6", exclude_source_ipv6_map_fd),
+        MAP_BINDING("shared_include_source_mac", include_source_mac_map_fd),
+        MAP_BINDING("shared_exclude_source_mac", exclude_source_mac_map_fd),
         MAP_BINDING("shared_bypass_ipv4", bypass_ipv4_map_fd),
         MAP_BINDING("shared_bypass_ipv6", bypass_ipv6_map_fd),
         MAP_BINDING("shared_scratch", scratch_map_fd),
@@ -85,6 +89,8 @@ int sb_ebpf_load_shared_network_programs(
         .include_source_ipv6_map_fd = runtime->include_source_ipv6_map_fd,
         .exclude_source_ipv4_map_fd = runtime->exclude_source_ipv4_map_fd,
         .exclude_source_ipv6_map_fd = runtime->exclude_source_ipv6_map_fd,
+        .include_source_mac_map_fd = runtime->include_source_mac_map_fd,
+        .exclude_source_mac_map_fd = runtime->exclude_source_mac_map_fd,
         .bypass_ipv4_map_fd = bypass_ipv4_map_fd,
         .bypass_ipv6_map_fd = bypass_ipv6_map_fd,
         .scratch_map_fd = runtime->scratch_map_fd,

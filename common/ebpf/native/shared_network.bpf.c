@@ -155,6 +155,8 @@ EXTERNAL_MAP(shared_include_source_ipv4, struct sb_lpm4_key, __u8, SB_SHARED_SOU
 EXTERNAL_MAP(shared_include_source_ipv6, struct sb_lpm6_key, __u8, SB_SHARED_SOURCE_CIDR_MAP_ENTRIES);
 EXTERNAL_MAP(shared_exclude_source_ipv4, struct sb_lpm4_key, __u8, SB_SHARED_SOURCE_CIDR_MAP_ENTRIES);
 EXTERNAL_MAP(shared_exclude_source_ipv6, struct sb_lpm6_key, __u8, SB_SHARED_SOURCE_CIDR_MAP_ENTRIES);
+EXTERNAL_MAP(shared_include_source_mac, struct sb_shared_mac_key, __u8, SB_SHARED_SOURCE_MAC_MAP_ENTRIES);
+EXTERNAL_MAP(shared_exclude_source_mac, struct sb_shared_mac_key, __u8, SB_SHARED_SOURCE_MAC_MAP_ENTRIES);
 EXTERNAL_MAP(shared_bypass_ipv4, struct sb_lpm4_key, __u8, 65536U);
 EXTERNAL_MAP(shared_bypass_ipv6, struct sb_lpm6_key, __u8, 65536U);
 struct bpf_map_def SEC("maps") shared_scratch = {
@@ -236,6 +238,17 @@ INLINE bool ipv6_source_selected(const __u8 source[16], const struct sb_shared_c
         map_lookup(&shared_exclude_source_ipv6, &key) != 0) return false;
     return (flags & SB_SHARED_FLAG_INCLUDE_SOURCE) == 0U ||
         map_lookup(&shared_include_source_ipv6, &key) != 0;
+}
+
+INLINE bool source_mac_selected(const __u8 source[6], const struct sb_shared_control *control) {
+    __u32 flags = control->flags;
+    if ((flags & (SB_SHARED_FLAG_INCLUDE_SOURCE_MAC | SB_SHARED_FLAG_EXCLUDE_SOURCE_MAC)) == 0U) return true;
+    struct sb_shared_mac_key key = {};
+    __builtin_memcpy(key.address, source, 6U);
+    if ((flags & SB_SHARED_FLAG_EXCLUDE_SOURCE_MAC) != 0U &&
+        map_lookup(&shared_exclude_source_mac, &key) != 0) return false;
+    return (flags & SB_SHARED_FLAG_INCLUDE_SOURCE_MAC) == 0U ||
+        map_lookup(&shared_include_source_mac, &key) != 0;
 }
 
 INLINE bool ipv4_builtin_bypass(const __u8 address[4]) {
@@ -635,7 +648,8 @@ NOINLINE int ingress_ipv4(
         if (load_cached_bypass(scratch, control, ip->protocol, initial_syn, tcp_sequence)) {
             return TC_ACT_PIPE;
         }
-        if (!ipv4_source_selected((const __u8 *)&ip->source, control)) {
+        if (!source_mac_selected(scratch->original.source_mac, control) ||
+            !ipv4_source_selected((const __u8 *)&ip->source, control)) {
             cache_bypass(scratch, ip->protocol, tcp_sequence);
             return TC_ACT_PIPE;
         }
@@ -835,7 +849,8 @@ NOINLINE int ingress_ipv6(
         if (load_cached_bypass(scratch, control, protocol, initial_syn, tcp_sequence)) {
             return TC_ACT_PIPE;
         }
-        if (!ipv6_source_selected(ip->source, control)) {
+        if (!source_mac_selected(scratch->original.source_mac, control) ||
+            !ipv6_source_selected(ip->source, control)) {
             cache_bypass(scratch, protocol, tcp_sequence);
             return TC_ACT_PIPE;
         }

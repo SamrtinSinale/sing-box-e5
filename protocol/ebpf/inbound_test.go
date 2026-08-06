@@ -213,6 +213,8 @@ func TestDisabledSharedNetworkIgnoresSubOptions(t *testing.T) {
 		IncludeInterface:  []string{""},
 		IncludeSourceCIDR: []netip.Prefix{{}},
 		ExcludeSourceCIDR: []netip.Prefix{{}},
+		IncludeMACAddress: []string{"invalid"},
+		ExcludeMACAddress: []string{"invalid"},
 		TCPriority:        option.EBPFTCPriority(42),
 		MapCapacity:       &zeroCapacity,
 	})
@@ -221,6 +223,7 @@ func TestDisabledSharedNetworkIgnoresSubOptions(t *testing.T) {
 	}
 	if normalized.Enabled || len(normalized.IncludeInterface) != 0 ||
 		len(normalized.IncludeSourceCIDR) != 0 || len(normalized.ExcludeSourceCIDR) != 0 ||
+		len(normalized.IncludeMACAddress) != 0 || len(normalized.ExcludeMACAddress) != 0 ||
 		normalized.TCPriority != 0 || normalized.MapCapacity != nil {
 		t.Fatalf("disabled shared-network options were not ignored: %+v", normalized)
 	}
@@ -234,6 +237,26 @@ func TestDisabledSharedNetworkIgnoresSubOptions(t *testing.T) {
 	}
 	if capacity != ECommon.SharedNetworkMapCapacity {
 		t.Fatalf("unexpected disabled shared-network map capacity: %d", capacity)
+	}
+}
+
+func TestParseSharedNetworkMACAddresses(t *testing.T) {
+	addresses, err := parseSharedNetworkMACAddresses("include_mac_address", []string{
+		"02:00:00:00:00:01",
+		"02-00-00-00-00-01",
+		"02:00:00:00:00:02",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(addresses) != 2 || addresses[0] != (ECommon.MACAddress{0x02, 0, 0, 0, 0, 1}) ||
+		addresses[1] != (ECommon.MACAddress{0x02, 0, 0, 0, 0, 2}) {
+		t.Fatalf("unexpected parsed MAC addresses: %v", addresses)
+	}
+	for _, address := range []string{"invalid", "02:00:00:00:00:00:00:01"} {
+		if _, err = parseSharedNetworkMACAddresses("include_mac_address", []string{address}); err == nil {
+			t.Fatalf("expected MAC address to be rejected: %s", address)
+		}
 	}
 }
 

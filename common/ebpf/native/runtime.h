@@ -92,6 +92,8 @@ struct sb_ebpf_shared_network_runtime {
     int include_source_ipv6_map_fd;
     int exclude_source_ipv4_map_fd;
     int exclude_source_ipv6_map_fd;
+    int include_source_mac_map_fd;
+    int exclude_source_mac_map_fd;
     int fallback_bypass_ipv4_map_fd;
     int fallback_bypass_ipv6_map_fd;
     int scratch_map_fd;

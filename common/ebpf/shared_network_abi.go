@@ -18,8 +18,17 @@ type SharedNetworkConfig struct {
 	RedirectIPv6      netip.Prefix
 	IncludeSourceCIDR []netip.Prefix
 	ExcludeSourceCIDR []netip.Prefix
+	IncludeSourceMAC  []MACAddress
+	ExcludeSourceMAC  []MACAddress
 	MapCapacity       uint32
 	UDPTimeout        time.Duration
+}
+
+type MACAddress [6]byte
+
+type sharedNetworkMACKey struct {
+	Address  MACAddress
+	Reserved [2]byte
 }
 
 type sharedNetworkControl struct {
@@ -125,6 +134,8 @@ const (
 	sharedNetworkFlagBypassIPv6
 	sharedNetworkFlagIncludeSource
 	sharedNetworkFlagExcludeSource
+	sharedNetworkFlagIncludeSourceMAC
+	sharedNetworkFlagExcludeSourceMAC
 )
 
 const sharedNetworkPolicyFlags = sharedNetworkFlagHostIPv4 |
@@ -132,7 +143,9 @@ const sharedNetworkPolicyFlags = sharedNetworkFlagHostIPv4 |
 	sharedNetworkFlagBypassIPv4 |
 	sharedNetworkFlagBypassIPv6 |
 	sharedNetworkFlagIncludeSource |
-	sharedNetworkFlagExcludeSource
+	sharedNetworkFlagExcludeSource |
+	sharedNetworkFlagIncludeSourceMAC |
+	sharedNetworkFlagExcludeSourceMAC
 
 func makeSharedNetworkListenerKey(
 	protocol uint8,

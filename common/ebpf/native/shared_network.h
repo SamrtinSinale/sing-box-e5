@@ -9,6 +9,7 @@
 
 #define SB_SHARED_NETWORK_OBJECT_MAP_ENTRIES 65536U
 #define SB_SHARED_SOURCE_CIDR_MAP_ENTRIES 4096U
+#define SB_SHARED_SOURCE_MAC_MAP_ENTRIES 1024U
 #define SB_SHARED_TOKEN_ATTEMPTS 8U
 #define SB_SHARED_NETWORK_SCRATCH_SIZE 256U
 
@@ -23,6 +24,8 @@
 #define SB_SHARED_FLAG_BYPASS_IPV6 (1U << 8)
 #define SB_SHARED_FLAG_INCLUDE_SOURCE (1U << 9)
 #define SB_SHARED_FLAG_EXCLUDE_SOURCE (1U << 10)
+#define SB_SHARED_FLAG_INCLUDE_SOURCE_MAC (1U << 11)
+#define SB_SHARED_FLAG_EXCLUDE_SOURCE_MAC (1U << 12)
 
 struct sb_shared_control {
     __u32 enabled;
@@ -53,6 +56,11 @@ struct sb_shared_original_key {
 struct sb_shared_token_value {
     __u8 token_addr[16];
     __u64 created_at_ns;
+};
+
+struct sb_shared_mac_key {
+    __u8 address[6];
+    __u8 reserved[2];
 };
 
 struct sb_shared_reply_key {

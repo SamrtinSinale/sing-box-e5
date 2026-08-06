@@ -22,6 +22,9 @@ func TestSharedNetworkABI(t *testing.T) {
 	if size := unsafe.Sizeof(sharedNetworkTokenValue{}); size != 24 {
 		t.Fatalf("unexpected shared-network token value size: %d", size)
 	}
+	if size := unsafe.Sizeof(sharedNetworkMACKey{}); size != 8 {
+		t.Fatalf("unexpected shared-network MAC key size: %d", size)
+	}
 	if size := unsafe.Sizeof(sharedNetworkReplyKey{}); size != 44 {
 		t.Fatalf("unexpected shared-network reply key size: %d", size)
 	}
@@ -31,7 +34,7 @@ func TestSharedNetworkABI(t *testing.T) {
 	if sharedNetworkFlagDNSHijack != 1<<4 {
 		t.Fatalf("unexpected shared-network DNS flag: %#x", sharedNetworkFlagDNSHijack)
 	}
-	if sharedNetworkPolicyFlags != 0x7e0 {
+	if sharedNetworkPolicyFlags != 0x1fe0 {
 		t.Fatalf("unexpected shared-network policy flags: %#x", sharedNetworkPolicyFlags)
 	}
 }

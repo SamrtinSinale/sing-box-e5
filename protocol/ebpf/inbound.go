@@ -65,6 +65,8 @@ type Inbound struct {
 	localRoutes              []*localRoute
 	sharedNetworkOptions     option.EBPFSharedNetworkOptions
 	sharedNetworkMapCapacity uint32
+	sharedNetworkIncludeMAC  []ECommon.MACAddress
+	sharedNetworkExcludeMAC  []ECommon.MACAddress
 	sharedNetwork            *sharedNetwork
 	cgroupBackendAccess      sync.RWMutex
 	lifecycleAccess          sync.Mutex
@@ -131,6 +133,20 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	if err = validateDataPaths(cgroupEnabled, sharedNetworkOptions.Enabled); err != nil {
 		return nil, err
 	}
+	sharedNetworkIncludeMAC, err := parseSharedNetworkMACAddresses(
+		"include_mac_address",
+		sharedNetworkOptions.IncludeMACAddress,
+	)
+	if err != nil {
+		return nil, err
+	}
+	sharedNetworkExcludeMAC, err := parseSharedNetworkMACAddresses(
+		"exclude_mac_address",
+		sharedNetworkOptions.ExcludeMACAddress,
+	)
+	if err != nil {
+		return nil, err
+	}
 	sharedNetworkMapCapacity, err := normalizeMapCapacityValue(
 		"shared_network.map_capacity",
 		sharedNetworkOptions.MapCapacity,
@@ -167,6 +183,8 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		cgroupMapCapacity:        cgroupMapCapacity,
 		sharedNetworkOptions:     sharedNetworkOptions,
 		sharedNetworkMapCapacity: sharedNetworkMapCapacity,
+		sharedNetworkIncludeMAC:  sharedNetworkIncludeMAC,
+		sharedNetworkExcludeMAC:  sharedNetworkExcludeMAC,
 		cgroupPolicy: ECommon.CgroupPolicy{
 			HijackDNS: dnsMode == dnsModeHijack,
 			IncludeUIDConfigured: len(options.IncludeUID) > 0 ||

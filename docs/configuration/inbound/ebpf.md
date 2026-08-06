@@ -48,6 +48,8 @@ Android or Linux. The build must enable cgo and the `with_ebpf` build tag.
     "include_interface": [],
     "include_source_cidr": [],
     "exclude_source_cidr": [],
+    "include_mac_address": [],
+    "exclude_mac_address": [],
     "tc_priority": 1,
     "map_capacity": 65536
   }
@@ -462,6 +464,38 @@ changing the configuration. Source selection is evaluated before DNS
 hijacking, so DNS from a client outside the include policy also bypasses
 shared-network.
 
+#### shared_network.include_mac_address
+
+List of 48-bit source MAC addresses allowed to enter the `shared_network`
+proxy path.
+
+The TC ingress program reads the source directly from the Ethernet header; it
+does not depend on an ARP or NDP neighbor-table entry. Linux Wi-Fi AP devices
+normally expose Ethernet-form frames at TC, so this is the associated hotspot
+client address. The address is also passed to sing-box route and DNS rules as
+`source_mac_address` metadata.
+
+When non-empty, traffic from other MAC addresses bypasses shared-network
+before source CIDR and DNS processing. The MAC is part of the cached flow key,
+so a different device cannot inherit a token or bypass decision by reusing the
+same client IP and port.
+
+#### shared_network.exclude_mac_address
+
+List of 48-bit source MAC addresses that bypass `shared_network`.
+
+Exclude takes precedence over include. MAC selection is evaluated before
+source CIDR selection, and both source-selection layers take precedence over
+DNS hijacking. The decision is cached for the flow lifetime and the maps are
+populated when the inbound starts; restart the inbound after changing these
+fields.
+
+MAC filtering identifies only the directly connected layer-2 peer. A client
+behind another bridge or router may appear as that intermediate device. MAC
+addresses may also be randomized or spoofed, so this feature is useful for
+traffic selection but is not an authentication mechanism. It is available
+only for `shared_network`, not local cgroup interception.
+
 #### shared_network.tc_priority
 
 TC filter priority for both shared-network ingress and egress programs.
@@ -483,6 +517,11 @@ are reference-counted so an older routed connection or UDP NAT session cannot
 remove state still used by another consumer of the same token. The last release
 removes the original-to-token, reply-translation, and listener-lookup entries
 together.
+
+The source MAC is also included in the original-destination key. TCP entries
+created by incomplete handshakes and never claimed by user space are expired
+after two minutes by a bounded background scan; active routed connections are
+protected by their flow references.
 
 An additional LRU map keeps CIDR bypass decisions stable across rule-set
 reloads. A bypassed TCP flow keeps its decision until the same tuple starts a
