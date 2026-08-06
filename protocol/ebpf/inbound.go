@@ -133,7 +133,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	}
 	sharedNetworkMapCapacity, err := normalizeMapCapacityValue(
 		"shared_network.map_capacity",
-		options.SharedNetwork.MapCapacity,
+		sharedNetworkOptions.MapCapacity,
 		ECommon.SharedNetworkMapCapacity,
 	)
 	if err != nil {

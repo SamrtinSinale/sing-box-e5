@@ -207,6 +207,36 @@ func TestValidateDataPaths(t *testing.T) {
 	}
 }
 
+func TestDisabledSharedNetworkIgnoresSubOptions(t *testing.T) {
+	zeroCapacity := option.EBPFMapCapacity(0)
+	normalized, err := normalizeSharedNetworkOptions(option.EBPFSharedNetworkOptions{
+		IncludeInterface:  []string{""},
+		IncludeSourceCIDR: []netip.Prefix{{}},
+		ExcludeSourceCIDR: []netip.Prefix{{}},
+		TCPriority:        option.EBPFTCPriority(42),
+		MapCapacity:       &zeroCapacity,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalized.Enabled || len(normalized.IncludeInterface) != 0 ||
+		len(normalized.IncludeSourceCIDR) != 0 || len(normalized.ExcludeSourceCIDR) != 0 ||
+		normalized.TCPriority != 0 || normalized.MapCapacity != nil {
+		t.Fatalf("disabled shared-network options were not ignored: %+v", normalized)
+	}
+	capacity, err := normalizeMapCapacityValue(
+		"shared_network.map_capacity",
+		normalized.MapCapacity,
+		ECommon.SharedNetworkMapCapacity,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capacity != ECommon.SharedNetworkMapCapacity {
+		t.Fatalf("unexpected disabled shared-network map capacity: %d", capacity)
+	}
+}
+
 func TestNormalizeDNSMode(t *testing.T) {
 	for _, test := range []struct {
 		input  string
