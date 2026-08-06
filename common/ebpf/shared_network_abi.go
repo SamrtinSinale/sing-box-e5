@@ -77,6 +77,11 @@ type sharedNetworkOriginalKey struct {
 	OriginalAddr   [16]byte
 }
 
+type sharedNetworkTokenValue struct {
+	TokenAddr   [16]byte
+	CreatedAtNS uint64
+}
+
 type sharedNetworkReplyKey struct {
 	InterfaceIndex uint32
 	Family         uint8
@@ -158,25 +163,45 @@ func sharedNetworkOriginalAddress(value sharedNetworkOriginalValue) (netip.Addr,
 }
 
 func makeSharedNetworkFlowHandle(key sharedNetworkListenerKey, value sharedNetworkOriginalValue) SharedNetworkFlowHandle {
+	originalKey := sharedNetworkOriginalKey{
+		InterfaceIndex: value.InterfaceIndex,
+		Family:         key.Family,
+		Protocol:       key.Protocol,
+		ClientPort:     key.ClientPort,
+		OriginalPort:   value.Port,
+		ClientAddr:     key.ClientAddr,
+		OriginalAddr:   value.Addr,
+	}
+	return makeSharedNetworkFlowHandleFromOriginal(
+		originalKey,
+		sharedNetworkTokenValue{TokenAddr: key.TokenAddr},
+		key.ListenerPort,
+	)
+}
+
+func makeSharedNetworkFlowHandleFromOriginal(
+	originalKey sharedNetworkOriginalKey,
+	token sharedNetworkTokenValue,
+	listenerPort uint16,
+) SharedNetworkFlowHandle {
 	return SharedNetworkFlowHandle{
-		originalKey: sharedNetworkOriginalKey{
-			InterfaceIndex: value.InterfaceIndex,
-			Family:         key.Family,
-			Protocol:       key.Protocol,
-			ClientPort:     key.ClientPort,
-			OriginalPort:   value.Port,
-			ClientAddr:     key.ClientAddr,
-			OriginalAddr:   value.Addr,
-		},
+		originalKey: originalKey,
 		replyKey: sharedNetworkReplyKey{
-			InterfaceIndex: value.InterfaceIndex,
-			Family:         key.Family,
-			Protocol:       key.Protocol,
-			ClientPort:     key.ClientPort,
-			ListenerPort:   key.ListenerPort,
-			ClientAddr:     key.ClientAddr,
-			TokenAddr:      key.TokenAddr,
+			InterfaceIndex: originalKey.InterfaceIndex,
+			Family:         originalKey.Family,
+			Protocol:       originalKey.Protocol,
+			ClientPort:     originalKey.ClientPort,
+			ListenerPort:   listenerPort,
+			ClientAddr:     originalKey.ClientAddr,
+			TokenAddr:      token.TokenAddr,
 		},
-		listenerKey: key,
+		listenerKey: sharedNetworkListenerKey{
+			Family:       originalKey.Family,
+			Protocol:     originalKey.Protocol,
+			ListenerPort: listenerPort,
+			TokenAddr:    token.TokenAddr,
+			ClientPort:   originalKey.ClientPort,
+			ClientAddr:   originalKey.ClientAddr,
+		},
 	}
 }

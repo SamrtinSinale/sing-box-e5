@@ -21,7 +21,10 @@ import (
 )
 
 const (
-	sharedNetworkFallbackRefresh = 3 * time.Second
+	sharedNetworkFallbackRefresh      = 3 * time.Second
+	sharedNetworkPendingTCPSweep      = 30 * time.Second
+	sharedNetworkPendingTCPMaxAge     = 2 * time.Minute
+	sharedNetworkPendingTCPSweepLimit = 1024
 	// Run before Android tethering offload (IPv6 priority 2, IPv4 priority 3).
 	defaultSharedNetworkTCPriority = 1
 	sharedIngressFilterHandle      = 0x5342
@@ -43,6 +46,7 @@ type sharedTCManager struct {
 	networkMonitor  tun.NetworkUpdateMonitor
 	networkCallback *list.Element[tun.NetworkUpdateCallback]
 	refreshWarnings warningLimiter
+	cleanupWarnings warningLimiter
 }
 
 type sharedNetworkLogger interface {
@@ -79,6 +83,8 @@ func (m *sharedTCManager) Start() error {
 
 func (m *sharedTCManager) loop(ctx context.Context) {
 	defer close(m.done)
+	cleanupTicker := time.NewTicker(sharedNetworkPendingTCPSweep)
+	defer cleanupTicker.Stop()
 	var ticker *time.Ticker
 	var tickerC <-chan time.Time
 	if m.networkMonitor == nil {
@@ -92,6 +98,14 @@ func (m *sharedTCManager) loop(ctx context.Context) {
 			return
 		case <-tickerC:
 		case <-m.wake:
+		case <-cleanupTicker.C:
+			if _, err := m.backend.ExpirePendingTCPFlows(
+				sharedNetworkPendingTCPMaxAge,
+				sharedNetworkPendingTCPSweepLimit,
+			); err != nil {
+				m.cleanupWarnings.warn(m.logger, "expire pending eBPF shared-network TCP flows: ", err)
+			}
+			continue
 		}
 		if err := m.reconcile(); err != nil {
 			m.refreshWarnings.warn(m.logger, "refresh eBPF shared-network interfaces: ", err)

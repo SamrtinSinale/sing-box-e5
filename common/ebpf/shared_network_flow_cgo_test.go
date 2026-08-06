@@ -4,6 +4,25 @@ package ebpf
 
 import "testing"
 
+func TestPendingTCPFlowExpired(t *testing.T) {
+	const now = uint64(1_000)
+	const maxAge = uint64(100)
+	for _, test := range []struct {
+		createdAt uint64
+		expired   bool
+	}{
+		{0, false},
+		{now + 1, false},
+		{now - maxAge + 1, false},
+		{now - maxAge, true},
+		{1, true},
+	} {
+		if expired := pendingTCPFlowExpired(test.createdAt, now, maxAge); expired != test.expired {
+			t.Fatalf("unexpected expiration for created_at=%d: %v", test.createdAt, expired)
+		}
+	}
+}
+
 func TestSharedNetworkFlowReferences(t *testing.T) {
 	backend := new(SharedNetworkBackend)
 	flow := SharedNetworkFlowHandle{

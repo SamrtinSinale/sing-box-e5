@@ -19,6 +19,9 @@ func TestSharedNetworkABI(t *testing.T) {
 	if size := unsafe.Sizeof(sharedNetworkOriginalKey{}); size != 44 {
 		t.Fatalf("unexpected shared-network original key size: %d", size)
 	}
+	if size := unsafe.Sizeof(sharedNetworkTokenValue{}); size != 24 {
+		t.Fatalf("unexpected shared-network token value size: %d", size)
+	}
 	if size := unsafe.Sizeof(sharedNetworkReplyKey{}); size != 44 {
 		t.Fatalf("unexpected shared-network reply key size: %d", size)
 	}
@@ -81,6 +84,14 @@ func TestMakeSharedNetworkFlowHandle(t *testing.T) {
 	}
 	copy(value.Addr[:], original.Addr().AsSlice())
 	flow := makeSharedNetworkFlowHandle(key, value)
+	flowFromOriginal := makeSharedNetworkFlowHandleFromOriginal(
+		flow.originalKey,
+		sharedNetworkTokenValue{TokenAddr: key.TokenAddr},
+		key.ListenerPort,
+	)
+	if flowFromOriginal != flow {
+		t.Fatalf("flow handles differ by construction path: %+v != %+v", flowFromOriginal, flow)
+	}
 	if flow.originalKey.InterfaceIndex != 42 ||
 		flow.originalKey.OriginalPort != original.Port() ||
 		flow.replyKey.InterfaceIndex != 42 ||

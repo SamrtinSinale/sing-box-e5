@@ -50,6 +50,7 @@ struct sb_shared_original_key {
 
 struct sb_shared_token_value {
     __u8 token_addr[16];
+    __u64 created_at_ns;
 };
 
 struct sb_shared_reply_key {
@@ -102,15 +103,16 @@ struct sb_shared_scratch {
     struct sb_shared_listener_key listener_key;
     struct sb_shared_original_value original_value;
     struct sb_shared_bypass_flow_value bypass_flow;
-    __u8 padding[48];
+    __u8 padding[32];
 };
 
 _Static_assert(sizeof(struct sb_shared_control) == 40U, "shared control ABI");
 _Static_assert(sizeof(struct sb_shared_original_key) == 44U, "shared original key ABI");
+_Static_assert(sizeof(struct sb_shared_token_value) == 24U, "shared token value ABI");
 _Static_assert(sizeof(struct sb_shared_reply_key) == 44U, "shared reply key ABI");
 _Static_assert(sizeof(struct sb_shared_listener_key) == 40U, "shared listener key ABI");
 _Static_assert(sizeof(struct sb_shared_original_value) == 28U, "shared original value ABI");
-_Static_assert(__builtin_offsetof(struct sb_shared_scratch, original_value) == 164U, "shared original value offset ABI");
+_Static_assert(__builtin_offsetof(struct sb_shared_scratch, original_value) == 176U, "shared original value offset ABI");
 _Static_assert(sizeof(struct sb_shared_scratch) == SB_SHARED_NETWORK_SCRATCH_SIZE, "shared-network scratch ABI");
 
 #endif

@@ -18,6 +18,7 @@ const (
 	bpfMapLookupElem          = 1
 	bpfMapUpdateElem          = 2
 	bpfMapDeleteElem          = 3
+	bpfMapGetNextKey          = 4
 	bpfMapLookupAndDeleteElem = 21
 	bpfMapTypeArray           = 2
 	bpfNoExist                = 1
@@ -39,6 +40,13 @@ type mapCreateAttr struct {
 	MapFlags   uint32
 }
 
+type mapGetNextKeyAttr struct {
+	MapFD   uint32
+	_       uint32
+	Key     uint64
+	NextKey uint64
+}
+
 func lookupMap(mapFD int, key unsafe.Pointer, value unsafe.Pointer) error {
 	return mapOperation(bpfMapLookupElem, mapFD, key, value, 0)
 }
@@ -57,6 +65,29 @@ func updateMapWithFlags(mapFD int, key unsafe.Pointer, value unsafe.Pointer, fla
 
 func deleteMap(mapFD int, key unsafe.Pointer) error {
 	return mapOperation(bpfMapDeleteElem, mapFD, key, nil, 0)
+}
+
+func getNextMapKey(mapFD int, key unsafe.Pointer, nextKey unsafe.Pointer) error {
+	if mapFD < 0 {
+		return errBackendClosed
+	}
+	attribute := mapGetNextKeyAttr{
+		MapFD:   uint32(mapFD),
+		Key:     uint64(uintptr(key)),
+		NextKey: uint64(uintptr(nextKey)),
+	}
+	_, _, errno := unix.Syscall(
+		unix.SYS_BPF,
+		bpfMapGetNextKey,
+		uintptr(unsafe.Pointer(&attribute)),
+		unsafe.Sizeof(attribute),
+	)
+	runtime.KeepAlive(key)
+	runtime.KeepAlive(nextKey)
+	if errno != 0 {
+		return errno
+	}
+	return nil
 }
 
 func mapOperation(command uintptr, mapFD int, key unsafe.Pointer, value unsafe.Pointer, flags uint64) error {

@@ -384,6 +384,7 @@ NOINLINE int reserve_token_attempt(
     const struct sb_shared_control *control,
     __u32 attempt) {
     __builtin_memset(&scratch->token, 0, sizeof(scratch->token));
+    scratch->token.created_at_ns = ktime_get_ns();
     __u32 hash = hash_original(&scratch->original, 0x9e3779b9U * (attempt + 1U));
     if (scratch->original.family == AF_INET_VALUE) {
         __u32 prefix = ((__u32)control->token_ipv4_prefix[0] << 24U) |

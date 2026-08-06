@@ -5,6 +5,7 @@ package ebpf
 import (
 	"errors"
 	"net/netip"
+	"time"
 	"unsafe"
 
 	E "github.com/sagernet/sing/common/exceptions"
@@ -91,6 +92,85 @@ func (b *SharedNetworkBackend) ReleaseFlow(flow *SharedNetworkFlowHandle) error 
 		deleteMapIfExists(int(b.runtime.listener_map_fd), unsafe.Pointer(&flow.listenerKey)),
 		deleteMapIfExists(int(b.runtime.reply_map_fd), unsafe.Pointer(&flow.replyKey)),
 	)
+}
+
+func (b *SharedNetworkBackend) ExpirePendingTCPFlows(maxAge time.Duration, limit int) (int, error) {
+	if b == nil {
+		return 0, errBackendClosed
+	}
+	if maxAge <= 0 || limit <= 0 {
+		return 0, E.New("invalid pending shared-network TCP cleanup parameters")
+	}
+	var monotonic unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &monotonic); err != nil {
+		return 0, E.Cause(err, "read monotonic clock for shared-network TCP cleanup")
+	}
+	now := uint64(monotonic.Nano())
+	maxAgeNS := uint64(maxAge)
+
+	b.access.RLock()
+	defer b.access.RUnlock()
+	if err := b.requireUsableLocked(); err != nil {
+		return 0, err
+	}
+	b.flowAccess.Lock()
+	defer b.flowAccess.Unlock()
+
+	mapFD := int(b.runtime.original_to_token_map_fd)
+	staleFlows := make([]SharedNetworkFlowHandle, 0, limit)
+	for range limit {
+		var currentKeyPointer unsafe.Pointer
+		if b.pendingTCPCursorValid {
+			currentKeyPointer = unsafe.Pointer(&b.pendingTCPCursor)
+		}
+		var nextKey sharedNetworkOriginalKey
+		if err := getNextMapKey(mapFD, currentKeyPointer, unsafe.Pointer(&nextKey)); err != nil {
+			if errors.Is(err, unix.ENOENT) {
+				b.pendingTCPCursorValid = false
+				break
+			}
+			return 0, E.Cause(err, "iterate pending shared-network TCP flows")
+		}
+		b.pendingTCPCursor = nextKey
+		b.pendingTCPCursorValid = true
+		if nextKey.Protocol != ProtocolTCP {
+			continue
+		}
+		var token sharedNetworkTokenValue
+		if err := lookupMap(mapFD, unsafe.Pointer(&nextKey), unsafe.Pointer(&token)); err != nil {
+			if errors.Is(err, unix.ENOENT) {
+				continue
+			}
+			return 0, E.Cause(err, "lookup pending shared-network TCP flow")
+		}
+		if !pendingTCPFlowExpired(token.CreatedAtNS, now, maxAgeNS) {
+			continue
+		}
+		flow := makeSharedNetworkFlowHandleFromOriginal(nextKey, token, b.control.ListenerPort)
+		if b.flowReferences[flow] == 0 {
+			staleFlows = append(staleFlows, flow)
+		}
+	}
+
+	var cleanupErr error
+	var expired int
+	for _, flow := range staleFlows {
+		err := E.Errors(
+			deleteMapIfExists(int(b.runtime.original_to_token_map_fd), unsafe.Pointer(&flow.originalKey)),
+			deleteMapIfExists(int(b.runtime.listener_map_fd), unsafe.Pointer(&flow.listenerKey)),
+			deleteMapIfExists(int(b.runtime.reply_map_fd), unsafe.Pointer(&flow.replyKey)),
+		)
+		if err != nil {
+			cleanupErr = E.Errors(cleanupErr, err)
+			continue
+		}
+		expired++
+	}
+	return expired, cleanupErr
+}
+
+func pendingTCPFlowExpired(createdAtNS uint64, now uint64, maxAgeNS uint64) bool {
+	return createdAtNS != 0 && now >= createdAtNS && now-createdAtNS >= maxAgeNS
 }
 
 func (b *SharedNetworkBackend) retainFlowLocked(flow SharedNetworkFlowHandle) {

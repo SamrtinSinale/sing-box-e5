@@ -56,22 +56,24 @@ import (
 var sharedNetworkObject []byte
 
 type SharedNetworkBackend struct {
-	access            sync.RWMutex
-	health            backendHealth
-	flowAccess        sync.Mutex
-	flowReferences    map[SharedNetworkFlowHandle]uint32
-	runtime           *C.struct_sb_ebpf_shared_network_runtime
-	control           sharedNetworkControl
-	hostIPv4          []netip.Prefix
-	hostIPv6          []netip.Prefix
-	bypassIPv4MapFD   int
-	bypassIPv6MapFD   int
-	bypassIPv4CIDR    []netip.Prefix
-	bypassIPv6CIDR    []netip.Prefix
-	includeSourceIPv4 []netip.Prefix
-	includeSourceIPv6 []netip.Prefix
-	excludeSourceIPv4 []netip.Prefix
-	excludeSourceIPv6 []netip.Prefix
+	access                sync.RWMutex
+	health                backendHealth
+	flowAccess            sync.Mutex
+	flowReferences        map[SharedNetworkFlowHandle]uint32
+	pendingTCPCursor      sharedNetworkOriginalKey
+	pendingTCPCursorValid bool
+	runtime               *C.struct_sb_ebpf_shared_network_runtime
+	control               sharedNetworkControl
+	hostIPv4              []netip.Prefix
+	hostIPv6              []netip.Prefix
+	bypassIPv4MapFD       int
+	bypassIPv6MapFD       int
+	bypassIPv4CIDR        []netip.Prefix
+	bypassIPv6CIDR        []netip.Prefix
+	includeSourceIPv4     []netip.Prefix
+	includeSourceIPv6     []netip.Prefix
+	excludeSourceIPv4     []netip.Prefix
+	excludeSourceIPv6     []netip.Prefix
 }
 
 func PrepareSharedNetwork(cgroupBackend *CgroupBackend, config SharedNetworkConfig) (*SharedNetworkBackend, error) {
