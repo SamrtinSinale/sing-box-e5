@@ -330,13 +330,8 @@ int sb_ebpf_cgroup_load_programs(
         runtime->self_bypass_tgid = true;
         return 0;
     }
-    if (!try_tgid) {
-        runtime->bypass_socket_cookie_map_fd = create_bypass_socket_cookie_map(
-            runtime->socket_bypass_map_capacity);
-    } else {
-        runtime->bypass_socket_cookie_map_fd = create_bypass_socket_cookie_map(
-            runtime->socket_bypass_map_capacity);
-    }
+    runtime->bypass_socket_cookie_map_fd = create_bypass_socket_cookie_map(
+        runtime->socket_bypass_map_capacity);
     if (runtime->bypass_socket_cookie_map_fd < 0) {
         sb_ebpf_set_error_stage(runtime->error_stage, "socket bypass map");
         return -1;
