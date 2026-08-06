@@ -2,6 +2,7 @@ package ebpf
 
 import (
 	"math"
+	"net"
 	"net/netip"
 	"time"
 
@@ -75,6 +76,8 @@ type sharedNetworkOriginalKey struct {
 	Reserved       uint16
 	ClientAddr     [16]byte
 	OriginalAddr   [16]byte
+	SourceMAC      [6]byte
+	Reserved2      [2]byte
 }
 
 type sharedNetworkTokenValue struct {
@@ -100,6 +103,8 @@ type sharedNetworkOriginalValue struct {
 	Addr           [16]byte
 	InterfaceIndex uint32
 	Reserved       uint32
+	SourceMAC      [6]byte
+	Reserved2      [2]byte
 }
 
 type SharedNetworkFlowHandle struct {
@@ -162,6 +167,10 @@ func sharedNetworkOriginalAddress(value sharedNetworkOriginalValue) (netip.Addr,
 	}
 }
 
+func sharedNetworkOriginalMAC(value sharedNetworkOriginalValue) net.HardwareAddr {
+	return append(net.HardwareAddr(nil), value.SourceMAC[:]...)
+}
+
 func makeSharedNetworkFlowHandle(key sharedNetworkListenerKey, value sharedNetworkOriginalValue) SharedNetworkFlowHandle {
 	originalKey := sharedNetworkOriginalKey{
 		InterfaceIndex: value.InterfaceIndex,
@@ -171,6 +180,7 @@ func makeSharedNetworkFlowHandle(key sharedNetworkListenerKey, value sharedNetwo
 		OriginalPort:   value.Port,
 		ClientAddr:     key.ClientAddr,
 		OriginalAddr:   value.Addr,
+		SourceMAC:      value.SourceMAC,
 	}
 	return makeSharedNetworkFlowHandleFromOriginal(
 		originalKey,

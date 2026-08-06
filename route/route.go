@@ -525,21 +525,31 @@ func (r *Router) preMatchFlow(ctx context.Context, metadata *adapter.InboundCont
 
 func (r *Router) prepareMatchMetadata(ctx context.Context, metadata *adapter.InboundContext) error {
 	r.searchProcessInfo(ctx, metadata)
-	if r.neighborResolver != nil && metadata.SourceMACAddress == nil && metadata.Source.Addr.IsValid() {
-		mac, macFound := r.neighborResolver.LookupMAC(metadata.Source.Addr)
-		if macFound {
-			metadata.SourceMACAddress = mac
+	if r.neighborResolver != nil && metadata.Source.Addr.IsValid() {
+		macFound := false
+		if metadata.SourceMACAddress == nil {
+			mac, found := r.neighborResolver.LookupMAC(metadata.Source.Addr)
+			macFound = found
+			if found {
+				metadata.SourceMACAddress = mac
+			}
 		}
-		hostname, hostnameFound := r.neighborResolver.LookupHostname(metadata.Source.Addr)
+		hostnameFound := false
+		if metadata.SourceHostname == "" {
+			hostname, found := r.neighborResolver.LookupHostname(metadata.Source.Addr)
+			hostnameFound = found
+			if found {
+				metadata.SourceHostname = hostname
+			}
+		}
 		if hostnameFound {
-			metadata.SourceHostname = hostname
-			if macFound {
-				r.logger.InfoContext(ctx, "found neighbor: ", mac, ", hostname: ", hostname)
+			if metadata.SourceMACAddress != nil {
+				r.logger.InfoContext(ctx, "found neighbor: ", metadata.SourceMACAddress, ", hostname: ", metadata.SourceHostname)
 			} else {
-				r.logger.InfoContext(ctx, "found neighbor hostname: ", hostname)
+				r.logger.InfoContext(ctx, "found neighbor hostname: ", metadata.SourceHostname)
 			}
 		} else if macFound {
-			r.logger.InfoContext(ctx, "found neighbor: ", mac)
+			r.logger.InfoContext(ctx, "found neighbor: ", metadata.SourceMACAddress)
 		}
 	}
 	if metadata.Destination.Addr.IsValid() && r.dnsTransport.FakeIP() != nil && r.dnsTransport.FakeIP().Store().Contains(metadata.Destination.Addr) {

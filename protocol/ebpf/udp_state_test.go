@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	ECommon "github.com/sagernet/sing-box/common/ebpf"
+
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 )
@@ -66,6 +68,24 @@ func TestUDPClientTableCachesPacketInfo(t *testing.T) {
 				t.Fatal("cached packet info does not contain the redirect source")
 			}
 		})
+	}
+}
+
+func TestUDPClientTableRetainsSharedNetworkSourceMAC(t *testing.T) {
+	var table udpClientTable
+	client := netip.MustParseAddrPort("192.168.43.10:9001")
+	redirectAddress := netip.MustParseAddr("127.128.0.9")
+	sourceMAC := net.HardwareAddr{0x02, 0x00, 0x00, 0x00, 0x00, 0x01}
+	table.setSharedBinding(client, ECommon.OriginalDestination{
+		Destination: netip.MustParseAddrPort("1.1.1.1:53"),
+		SourceMAC:   sourceMAC,
+	}, redirectAddress, nil)
+	clientState, loaded := table.load(client)
+	if !loaded {
+		t.Fatal("client state was not created")
+	}
+	if actual := clientState.sourceMACAddress(); !bytes.Equal(actual, sourceMAC) {
+		t.Fatalf("unexpected source MAC: %s", actual)
 	}
 }
 
@@ -206,8 +226,8 @@ func TestUDPClientTableSeparatesSharedRedirectsByClient(t *testing.T) {
 	client1 := netip.MustParseAddrPort("192.168.43.10:1001")
 	client2 := netip.MustParseAddrPort("192.168.43.11:1001")
 
-	table.setSharedBinding(client1, destination, redirectAddress, nil)
-	table.setSharedBinding(client2, destination, redirectAddress, nil)
+	table.setSharedBinding(client1, ECommon.OriginalDestination{Destination: destination}, redirectAddress, nil)
+	table.setSharedBinding(client2, ECommon.OriginalDestination{Destination: destination}, redirectAddress, nil)
 	state1, _ := table.load(client1)
 	if released := table.deleteShared(client1, state1); len(released) != 1 {
 		t.Fatalf("first client flow was not released independently: %v", released)

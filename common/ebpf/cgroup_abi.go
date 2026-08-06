@@ -1,6 +1,7 @@
 package ebpf
 
 import (
+	"net"
 	"net/netip"
 	"time"
 
@@ -53,6 +54,7 @@ func DefaultCgroupMapCapacity() CgroupMapCapacity {
 type OriginalDestination struct {
 	Destination  netip.AddrPort
 	ConnectedUDP bool
+	SourceMAC    net.HardwareAddr
 }
 
 type listenerLookupKey struct {

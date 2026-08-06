@@ -16,7 +16,7 @@ func TestSharedNetworkABI(t *testing.T) {
 	if size := unsafe.Sizeof(sharedNetworkListenerKey{}); size != 40 {
 		t.Fatalf("unexpected shared-network listener key size: %d", size)
 	}
-	if size := unsafe.Sizeof(sharedNetworkOriginalKey{}); size != 44 {
+	if size := unsafe.Sizeof(sharedNetworkOriginalKey{}); size != 52 {
 		t.Fatalf("unexpected shared-network original key size: %d", size)
 	}
 	if size := unsafe.Sizeof(sharedNetworkTokenValue{}); size != 24 {
@@ -25,7 +25,7 @@ func TestSharedNetworkABI(t *testing.T) {
 	if size := unsafe.Sizeof(sharedNetworkReplyKey{}); size != 44 {
 		t.Fatalf("unexpected shared-network reply key size: %d", size)
 	}
-	if size := unsafe.Sizeof(sharedNetworkOriginalValue{}); size != 28 {
+	if size := unsafe.Sizeof(sharedNetworkOriginalValue{}); size != 36 {
 		t.Fatalf("unexpected shared-network original value size: %d", size)
 	}
 	if sharedNetworkFlagDNSHijack != 1<<4 {
@@ -81,6 +81,7 @@ func TestMakeSharedNetworkFlowHandle(t *testing.T) {
 		Protocol:       ProtocolUDP,
 		Port:           original.Port(),
 		InterfaceIndex: 42,
+		SourceMAC:      [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x01},
 	}
 	copy(value.Addr[:], original.Addr().AsSlice())
 	flow := makeSharedNetworkFlowHandle(key, value)
@@ -94,6 +95,7 @@ func TestMakeSharedNetworkFlowHandle(t *testing.T) {
 	}
 	if flow.originalKey.InterfaceIndex != 42 ||
 		flow.originalKey.OriginalPort != original.Port() ||
+		flow.originalKey.SourceMAC != value.SourceMAC ||
 		flow.replyKey.InterfaceIndex != 42 ||
 		flow.replyKey.ListenerPort != tokenDestination.Port() ||
 		flow.listenerKey != key {

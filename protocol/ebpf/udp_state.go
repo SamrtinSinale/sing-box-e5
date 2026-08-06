@@ -29,6 +29,7 @@ type udpClientShard struct {
 type udpClientState struct {
 	access    sync.RWMutex
 	connected bool
+	sourceMAC net.HardwareAddr
 	bindings  map[netip.AddrPort]udpRedirectBinding
 	originals map[netip.Addr]udpOriginalDestination
 }
@@ -148,7 +149,7 @@ func (t *udpClientTable) setBinding(
 
 func (t *udpClientTable) setSharedBinding(
 	client netip.AddrPort,
-	destination netip.AddrPort,
+	original ECommon.OriginalDestination,
 	redirectAddress netip.Addr,
 	flow *ECommon.SharedNetworkFlowHandle,
 ) ([]udpRedirectRelease, bool) {
@@ -157,7 +158,7 @@ func (t *udpClientTable) setSharedBinding(
 		redirectAddress,
 		udpRedirectReference{client: client, address: redirectAddress},
 		udpOriginalDestination{
-			original:   ECommon.OriginalDestination{Destination: destination},
+			original:   original,
 			sharedFlow: flow,
 		},
 	)
@@ -208,6 +209,9 @@ func (t *udpClientTable) setClientBinding(
 		return nil, false
 	}
 	clientState.originals[redirectAddress] = original
+	if len(original.original.SourceMAC) != 0 {
+		clientState.sourceMAC = append(clientState.sourceMAC[:0], original.original.SourceMAC...)
+	}
 	clientState.bindings[destination] = udpRedirectBinding{
 		address:    redirectAddress,
 		packetInfo: sourcePacketInfo(redirectAddress),
@@ -307,6 +311,12 @@ func (s *udpClientState) redirectBinding(destination netip.AddrPort) (udpRedirec
 	binding, loaded := s.bindings[destination]
 	s.access.RUnlock()
 	return binding, loaded
+}
+
+func (s *udpClientState) sourceMACAddress() net.HardwareAddr {
+	s.access.RLock()
+	defer s.access.RUnlock()
+	return append(net.HardwareAddr(nil), s.sourceMAC...)
 }
 
 func sourcePacketInfo(address netip.Addr) []byte {

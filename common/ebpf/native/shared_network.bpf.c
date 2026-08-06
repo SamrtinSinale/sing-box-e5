@@ -330,6 +330,7 @@ INLINE void fill_listener(struct sb_shared_scratch *scratch, const struct sb_sha
     scratch->original_value.protocol = scratch->original.protocol;
     scratch->original_value.port = scratch->original.original_port;
     scratch->original_value.ifindex = scratch->original.ifindex;
+    __builtin_memcpy(scratch->original_value.source_mac, scratch->original.source_mac, 6U);
     copy_address(
         scratch->original_value.addr,
         scratch->original.original_addr,
@@ -600,7 +601,9 @@ INLINE bool ipv6_token_address(const __u8 address[16], const struct sb_shared_co
 NOINLINE int ingress_ipv4(
     struct __sk_buff *skb,
     __u32 l3_offset,
-    const struct sb_shared_control *control) {
+    const struct sb_shared_control *control,
+    __u32 source_mac_first,
+    __u16 source_mac_last) {
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
     struct ipv4_header *ip = data + l3_offset;
@@ -621,6 +624,8 @@ NOINLINE int ingress_ipv4(
     scratch->original.protocol = ip->protocol;
     scratch->original.client_port = source_port;
     scratch->original.original_port = destination_port;
+    __builtin_memcpy(scratch->original.source_mac, &source_mac_first, 4U);
+    __builtin_memcpy(scratch->original.source_mac + 4U, &source_mac_last, 2U);
     __builtin_memcpy(scratch->original.client_addr, &ip->source, 4U);
     __builtin_memcpy(scratch->original.original_addr, &ip->destination, 4U);
     bool cached = load_cached_token(scratch);
@@ -788,7 +793,9 @@ NOINLINE __u32 ipv6_transport_offset(
 NOINLINE int ingress_ipv6(
     struct __sk_buff *skb,
     __u32 l3_offset,
-    const struct sb_shared_control *control) {
+    const struct sb_shared_control *control,
+    __u32 source_mac_first,
+    __u16 source_mac_last) {
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
     struct ipv6_header *ip = data + l3_offset;
@@ -817,6 +824,8 @@ NOINLINE int ingress_ipv6(
     scratch->original.protocol = protocol;
     scratch->original.client_port = source_port;
     scratch->original.original_port = destination_port;
+    __builtin_memcpy(scratch->original.source_mac, &source_mac_first, 4U);
+    __builtin_memcpy(scratch->original.source_mac + 4U, &source_mac_last, 2U);
     copy_address(scratch->original.client_addr, ip->source, 16U);
     copy_address(scratch->original.original_addr, ip->destination, 16U);
     bool cached = load_cached_token(scratch);
@@ -971,15 +980,24 @@ NOINLINE int classify(struct __sk_buff *skb, bool ingress) {
         protocol = swap16(vlan->protocol);
         l3_offset += sizeof(*vlan);
     }
+    if (!ingress) {
+        if (protocol == ETH_P_IP_VALUE && (control->flags & SB_SHARED_FLAG_IPV4) != 0U) {
+            return egress_ipv4(skb, l3_offset, control);
+        }
+        if (protocol == ETH_P_IPV6_VALUE && (control->flags & SB_SHARED_FLAG_IPV6) != 0U) {
+            return egress_ipv6(skb, l3_offset, control);
+        }
+        return TC_ACT_PIPE;
+    }
+    __u32 source_mac_first;
+    __u16 source_mac_last;
+    __builtin_memcpy(&source_mac_first, ethernet->source, 4U);
+    __builtin_memcpy(&source_mac_last, ethernet->source + 4U, 2U);
     if (protocol == ETH_P_IP_VALUE && (control->flags & SB_SHARED_FLAG_IPV4) != 0U) {
-        return ingress
-            ? ingress_ipv4(skb, l3_offset, control)
-            : egress_ipv4(skb, l3_offset, control);
+        return ingress_ipv4(skb, l3_offset, control, source_mac_first, source_mac_last);
     }
     if (protocol == ETH_P_IPV6_VALUE && (control->flags & SB_SHARED_FLAG_IPV6) != 0U) {
-        return ingress
-            ? ingress_ipv6(skb, l3_offset, control)
-            : egress_ipv6(skb, l3_offset, control);
+        return ingress_ipv6(skb, l3_offset, control, source_mac_first, source_mac_last);
     }
     return TC_ACT_PIPE;
 }

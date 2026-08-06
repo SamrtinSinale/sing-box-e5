@@ -34,6 +34,7 @@ func (s *sharedNetwork) NewConnection(ctx context.Context, conn net.Conn, metada
 	metadata.InboundType = s.inbound.Type()
 	metadata.Source = M.SocksaddrFromNetIP(client)
 	metadata.Destination = M.SocksaddrFromNetIP(original.Destination)
+	metadata.SourceMACAddress = original.SourceMAC
 	onClose = N.AppendClose(onClose, func(error) {
 		s.releaseFlow(flow)
 	})
@@ -65,7 +66,7 @@ func (s *sharedNetwork) NewPacket(buffer *buf.Buffer, oob []byte, source M.Socks
 		retainedFlow = true
 	}
 	if !bindingReady {
-		released, installed := s.udpClientTable.setSharedBinding(client, original.Destination, tokenAddress, flow)
+		released, installed := s.udpClientTable.setSharedBinding(client, original, tokenAddress, flow)
 		if retainedFlow && !installed {
 			s.releaseFlow(flow)
 		}
@@ -80,6 +81,9 @@ func (s *sharedNetwork) NewPacketConnectionEx(ctx context.Context, conn N.Packet
 		InboundType: s.inbound.Type(),
 		Source:      source,
 		Destination: destination,
+	}
+	if clientState, loaded := s.udpClientTable.load(source.AddrPort()); loaded {
+		metadata.SourceMACAddress = clientState.sourceMACAddress()
 	}
 	s.inbound.router.RoutePacketConnectionEx(ctx, conn, metadata, onClose)
 }
