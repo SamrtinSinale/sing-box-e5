@@ -5,23 +5,15 @@ on:
 
 jobs:
   build:
-    name: Build (${{ matrix.target.goarch }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        target:
+        include:
           - goarch: arm64
             compiler: aarch64-linux-android35-clang
-          - goarch: arm
-            goarm: "7"
-            compiler: armv7a-linux-androideabi35-clang
-          - goarch: amd64
-            compiler: x86_64-linux-android35-clang
-          - goarch: "386"
-            compiler: i686-linux-android35-clang
     env:
-      BASE_TAGS: with_gvisor,with_quic,with_dhcp,with_utls,with_clash_api,with_ebpf,badlinkname,tfogo_checklinkname0
+      TAGS: with_gvisor,with_quic,with_dhcp,with_utls,with_clash_api,with_connection_history,badlinkname,tfogo_checklinkname0,with_provider,with_ebpf
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -43,16 +35,82 @@ jobs:
         env:
           CGO_ENABLED: "1"
           GOOS: android
-          GOARCH: ${{ matrix.target.goarch }}
-          GOARM: ${{ matrix.target.goarm }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-          CC: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.target.compiler }}
+          CC: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.compiler }}
         run: |
-          export TAGS="$BASE_TAGS"
-          make build
+          git fetch --tags --force https://github.com/SagerNet/sing-box.git 2>/dev/null || true
+          VERSION_TAG=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/-g.*//')
+          if [ -z "$VERSION_TAG" ]; then
+            echo "ERROR: no official version tag reachable" >&2
+            exit 1
+          fi
+          git tag -f "$VERSION_TAG" HEAD
+          echo "resolved core version tag: $VERSION_TAG"
+          # zashboard 显示: 版本-cz0618-run次数（cz0618 = CHIZI0618 标识）
+          make build VERSION="${VERSION_TAG#v}-cz0618-run${{ github.run_number }}"
 
       - name: Upload
         uses: actions/upload-artifact@v7
         with:
-          name: sing-box-android-${{ matrix.target.goarch }}-with-ebpf
+          name: sing-box-android-${{ matrix.goarch }}-with-ebpf
           path: sing-box
+
+  upload-telegram:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Package and upload to Telegram
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
+            echo "skip: TG_BOT_TOKEN / TG_CHAT_ID secrets not set"
+            exit 0
+          fi
+          git remote add upstream https://github.com/CHIZI-0618/sing-box.git 2>/dev/null || git remote set-url upstream https://github.com/CHIZI-0618/sing-box.git
+          git fetch --tags --force upstream 2>/dev/null || true
+          git fetch --tags --force 2>/dev/null || true
+          # Resolve version from official tags actually reachable in current HEAD
+          git fetch --tags --force --filter=blob:none https://github.com/SagerNet/sing-box.git 2>/dev/null || true
+          VERSION_TAG=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/-g.*//')
+          if [ -z "$VERSION_TAG" ]; then
+            echo "ERROR: no official version tag reachable in HEAD (tag fetch failed?)" >&2
+            exit 1
+          fi
+          echo "version tag: $VERSION_TAG (code actually included)"
+          git tag -f "$VERSION_TAG" HEAD 2>/dev/null || true
+          # 推送 tag 到 fork（需要 contents: write 权限），失败必须报错不能静默
+          if ! git push origin "$VERSION_TAG" --force; then
+            echo "ERROR: failed to push tag $VERSION_TAG to origin" >&2
+            exit 1
+          fi
+          echo "tag pushed: $VERSION_TAG"
+          VERSION=$(echo "$VERSION_TAG" | sed 's/^v//; s/beta\./beta/' || echo dev)
+          # TG 文件名里的 hash 用 CHIZI0618 上游 testing-ref1nd 的最新 hash（不是 fork 自己的 hash）
+          git fetch --tags --force upstream 2>/dev/null || true
+          CZ_HASH=$(git rev-parse --short upstream/testing-ref1nd 2>/dev/null || echo nosha)
+          echo "CHIZI upstream hash: $CZ_HASH"
+          # run_number 是该 workflow 的全局自增序号（每次构建都会+1），保证文件名永远不重复
+          COUNT=${{ github.run_number }}
+          FNAME="sing-box-android-arm64-${VERSION}-${CZ_HASH}-run${COUNT}.zip"
+          cd artifacts
+          zip -r "../${FNAME}" sing-box
+          cd ..
+          ls -lh "${FNAME}"
+          curl -s -F "chat_id=${TG_CHAT_ID}"                -F "document=@${FNAME}"                "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument"             | python3 -c "import json,sys; d=json.load(sys.stdin); print('upload ok:', d.get('ok'), d.get('description',''))"
