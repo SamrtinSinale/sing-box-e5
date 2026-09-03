@@ -5,23 +5,15 @@ on:
 
 jobs:
   build:
-    name: Build (${{ matrix.target.goarch }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        target:
+        include:
           - goarch: arm64
             compiler: aarch64-linux-android35-clang
-          - goarch: arm
-            goarm: "7"
-            compiler: armv7a-linux-androideabi35-clang
-          - goarch: amd64
-            compiler: x86_64-linux-android35-clang
-          - goarch: "386"
-            compiler: i686-linux-android35-clang
     env:
-      BASE_TAGS: with_gvisor,with_quic,with_dhcp,with_utls,with_clash_api,with_ebpf,badlinkname,tfogo_checklinkname0
+      TAGS: with_gvisor,with_quic,with_dhcp,with_utls,with_clash_api,with_connection_history,badlinkname,tfogo_checklinkname0,with_provider,with_ebpf
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -43,16 +35,94 @@ jobs:
         env:
           CGO_ENABLED: "1"
           GOOS: android
-          GOARCH: ${{ matrix.target.goarch }}
-          GOARM: ${{ matrix.target.goarm }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-          CC: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.target.compiler }}
+          CC: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.compiler }}
         run: |
-          export TAGS="$BASE_TAGS"
-          make build
+          # 版本 tag 动态跟随 reF1nd 上游（CHIZI testing-ref1nd 的上游）实际 tag
+          git fetch --tags --force https://github.com/reF1nd/sing-box.git 2>/dev/null || true
+          REFIND_TAG=$(git tag -l 'v*-reF1nd' | sort -V | tail -1)
+          if [ -z "$REFIND_TAG" ]; then
+            echo "ERROR: no reF1nd tag found (tag fetch failed?)" >&2
+            exit 1
+          fi
+          VERSION_BASE=$(echo "$REFIND_TAG" | sed -E 's/^v([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+          TAG_SEG=$(echo "$REFIND_TAG" | sed -E 's/^v[0-9]+\.[0-9]+\.[0-9]+//; s/-reF1nd$//; s/^-//')
+          echo "reF1nd tag: $REFIND_TAG (version=$VERSION_BASE, tag_seg=$TAG_SEG)"
+          if [ -n "$TAG_SEG" ]; then
+            BUILD_VERSION="${VERSION_BASE}-${TAG_SEG}-cz0618-run${{ github.run_number }}"
+          else
+            BUILD_VERSION="${VERSION_BASE}-cz0618-run${{ github.run_number }}"
+          fi
+          # zashboard 显示: 版本-tag段-cz0618-run次数（cz0618 = CHIZI0618 标识）
+          make build VERSION="$BUILD_VERSION"
 
       - name: Upload
         uses: actions/upload-artifact@v7
         with:
-          name: sing-box-android-${{ matrix.target.goarch }}-with-ebpf
+          name: sing-box-android-${{ matrix.goarch }}-with-ebpf
           path: sing-box
+
+  upload-telegram:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Package and upload to Telegram
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
+            echo "skip: TG_BOT_TOKEN / TG_CHAT_ID secrets not set"
+            exit 0
+          fi
+          git remote add upstream https://github.com/CHIZI-0618/sing-box.git 2>/dev/null || git remote set-url upstream https://github.com/CHIZI-0618/sing-box.git
+          git fetch --tags --force upstream 2>/dev/null || true
+          git fetch --tags --force 2>/dev/null || true
+          # 版本 tag 动态跟随 reF1nd 上游（CHIZI testing-ref1nd 的上游）实际 tag
+          git fetch --tags --force --filter=blob:none https://github.com/reF1nd/sing-box.git 2>/dev/null || true
+          REFIND_TAG=$(git tag -l 'v*-reF1nd' | sort -V | tail -1)
+          if [ -z "$REFIND_TAG" ]; then
+            echo "ERROR: no reF1nd tag found (tag fetch failed?)" >&2
+            exit 1
+          fi
+          VERSION_BASE=$(echo "$REFIND_TAG" | sed -E 's/^v([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+          TAG_SEG=$(echo "$REFIND_TAG" | sed -E 's/^v[0-9]+\.[0-9]+\.[0-9]+//; s/-reF1nd$//; s/^-//')
+          echo "reF1nd tag: $REFIND_TAG (version=$VERSION_BASE, tag_seg=$TAG_SEG)"
+          # 推送 reF1nd tag 到 fork（需要 contents: write 权限），失败必须报错不能静默
+          git tag -f "$REFIND_TAG" HEAD 2>/dev/null || true
+          if ! git push origin "$REFIND_TAG" --force; then
+            echo "ERROR: failed to push tag $REFIND_TAG to origin" >&2
+            exit 1
+          fi
+          echo "tag pushed: $REFIND_TAG"
+          # TG 文件名里的 hash 用 CHIZI0618 上游 testing-ref1nd 的最新 hash（不是 fork 自己的 hash）
+          git fetch --tags --force upstream 2>/dev/null || true
+          CZ_HASH=$(git rev-parse --short upstream/testing-ref1nd 2>/dev/null || echo nosha)
+          echo "CHIZI upstream hash: $CZ_HASH"
+          # run_number 是该 workflow 的全局自增序号（每次构建都会+1），保证文件名永远不重复
+          COUNT=${{ github.run_number }}
+          if [ -n "$TAG_SEG" ]; then
+            FNAME="sing-box-android-arm64-${VERSION_BASE}-${TAG_SEG}-${CZ_HASH}-run${COUNT}.zip"
+          else
+            FNAME="sing-box-android-arm64-${VERSION_BASE}-${CZ_HASH}-run${COUNT}.zip"
+          fi
+          cd artifacts
+          zip -r "../${FNAME}" sing-box
+          cd ..
+          ls -lh "${FNAME}"
+          curl -s -F "chat_id=${TG_CHAT_ID}"                -F "document=@${FNAME}"                "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument"             | python3 -c "import json,sys; d=json.load(sys.stdin); print('upload ok:', d.get('ok'), d.get('description',''))"
