@@ -3,25 +3,25 @@ name: Build Android eBPF
 on:
   workflow_dispatch:
 
+concurrency:
+  group: android-ebpf
+  cancel-in-progress: false
+
 jobs:
   build:
-    name: Build (${{ matrix.target.goarch }})
     runs-on: ubuntu-24.04
+    outputs:
+      refind_tag: ${{ steps.ver.outputs.refind_tag }}
+      version_base: ${{ steps.ver.outputs.version_base }}
+      tag_seg: ${{ steps.ver.outputs.tag_seg }}
     strategy:
       fail-fast: false
       matrix:
-        target:
+        include:
           - goarch: arm64
             compiler: aarch64-linux-android35-clang
-          - goarch: arm
-            goarm: "7"
-            compiler: armv7a-linux-androideabi35-clang
-          - goarch: amd64
-            compiler: x86_64-linux-android35-clang
-          - goarch: "386"
-            compiler: i686-linux-android35-clang
     env:
-      BASE_TAGS: with_quic,with_dhcp,with_utls,with_clash_api,with_ebpf,badlinkname,tfogo_checklinkname0
+      TAGS: with_gvisor,with_quic,with_dhcp,with_utls,with_clash_api,with_connection_history,badlinkname,tfogo_checklinkname0,with_provider,with_ebpf
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -31,7 +31,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: 1.26.8
+          go-version: 1.26.6
 
       - name: Setup Android NDK
         id: setup-ndk
@@ -39,20 +39,111 @@ jobs:
         with:
           ndk-version: r29
 
+      - name: Resolve version from reF1nd upstream
+        id: ver
+        run: |
+          git fetch --tags --force https://github.com/reF1nd/sing-box.git
+          REFIND_TAG=$(git tag -l 'v*-reF1nd' | sort -V | tail -1)
+          if [ -z "$REFIND_TAG" ]; then
+            echo "ERROR: no reF1nd tag found (tag fetch failed?)" >&2
+            exit 1
+          fi
+          CORE=${REFIND_TAG#v}
+          VERSION_BASE=${CORE%%-*}
+          REST=${CORE#"$VERSION_BASE"}
+          REST=${REST%-reF1nd}
+          TAG_SEG=${REST#-}
+          echo "reF1nd tag: $REFIND_TAG (version=$VERSION_BASE, tag_seg=$TAG_SEG)"
+          {
+            echo "refind_tag=$REFIND_TAG"
+            echo "version_base=$VERSION_BASE"
+            echo "tag_seg=$TAG_SEG"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build
         env:
           CGO_ENABLED: "1"
           GOOS: android
-          GOARCH: ${{ matrix.target.goarch }}
-          GOARM: ${{ matrix.target.goarm }}
+          GOARCH: ${{ matrix.goarch }}
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-          CC: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.target.compiler }}
+          CC: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.compiler }}
         run: |
-          export TAGS="$BASE_TAGS"
-          make build
+          TAG_SEG="${{ steps.ver.outputs.tag_seg }}"
+          if [ -n "$TAG_SEG" ]; then
+            BUILD_VERSION="${{ steps.ver.outputs.version_base }}-${TAG_SEG}-cz0618-run${{ github.run_number }}"
+          else
+            BUILD_VERSION="${{ steps.ver.outputs.version_base }}-cz0618-run${{ github.run_number }}"
+          fi
+          echo "build version: $BUILD_VERSION"
+          make build VERSION="$BUILD_VERSION"
 
       - name: Upload
         uses: actions/upload-artifact@v7
         with:
-          name: sing-box-android-${{ matrix.target.goarch }}-with-ebpf
+          name: sing-box-android-${{ matrix.goarch }}-with-ebpf
           path: sing-box
+
+  upload-telegram:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Package and upload to Telegram
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REFIND_TAG: ${{ needs.build.outputs.refind_tag }}
+          VERSION_BASE: ${{ needs.build.outputs.version_base }}
+          TAG_SEG: ${{ needs.build.outputs.tag_seg }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
+            echo "skip: TG_BOT_TOKEN / TG_CHAT_ID secrets not set"
+            exit 0
+          fi
+
+          git remote add upstream https://github.com/CHIZI-0618/sing-box.git 2>/dev/null || git remote set-url upstream https://github.com/CHIZI-0618/sing-box.git
+
+          git tag -f "$REFIND_TAG" HEAD
+          git push origin "$REFIND_TAG" --force
+          echo "tag pushed: $REFIND_TAG"
+
+          git fetch --tags --force upstream
+          CZ_HASH=$(git rev-parse --short=9 upstream/testing-ref1nd)
+          echo "CHIZI upstream hash: $CZ_HASH"
+
+          if [ -n "$TAG_SEG" ]; then
+            STEM="${VERSION_BASE}-${TAG_SEG}"
+          else
+            STEM="${VERSION_BASE}"
+          fi
+          FNAME="sing-box-android-arm64-${STEM}-${CZ_HASH}-run${{ github.run_number }}.zip"
+
+          cd artifacts
+          zip -r "../${FNAME}" sing-box
+          cd ..
+          ls -lh "${FNAME}"
+
+          SIZE=$(stat -c%s "${FNAME}")
+          if [ "$SIZE" -gt 52428800 ]; then
+            echo "ERROR: ${FNAME} is ${SIZE} bytes, exceeds Telegram 50MB bot limit" >&2
+            exit 1
+          fi
+
+          curl -s \
+            -F "chat_id=${TG_CHAT_ID}" \
+            -F "document=@${FNAME}" \
+            "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); ok=d.get('ok'); print('upload ok:', ok, d.get('description','')); sys.exit(0 if ok else 1)"
