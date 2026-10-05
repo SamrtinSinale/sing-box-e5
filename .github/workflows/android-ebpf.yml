@@ -11,7 +11,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     outputs:
-      refind_tag: ${{ steps.ver.outputs.refind_tag }}
+      code_tag: ${{ steps.ver.outputs.code_tag }}
       version_base: ${{ steps.ver.outputs.version_base }}
       tag_seg: ${{ steps.ver.outputs.tag_seg }}
     strategy:
@@ -39,23 +39,25 @@ jobs:
         with:
           ndk-version: r29
 
-      - name: Resolve version from reF1nd upstream
+      - name: Resolve version from code (SagerNet tag contained in HEAD)
         id: ver
         run: |
-          git fetch --tags --force https://github.com/reF1nd/sing-box.git
-          REFIND_TAG=$(git tag -l 'v*-reF1nd' | sort -V | tail -1)
-          if [ -z "$REFIND_TAG" ]; then
-            echo "ERROR: no reF1nd tag found (tag fetch failed?)" >&2
+          git fetch --no-tags --force https://github.com/SagerNet/sing-box.git 'refs/tags/*:refs/tags/off/*'
+          CODE_TAG=""
+          for t in $(git tag -l 'off/v*' | sed 's|^off/||' | sort -Vr | head -40); do
+            if git merge-base --is-ancestor "off/$t" HEAD; then CODE_TAG="$t"; break; fi
+          done
+          if [ -z "$CODE_TAG" ]; then
+            echo "ERROR: 代码里找不到匹配的原版 tag（tag fetch 失败？）" >&2
             exit 1
           fi
-          CORE=${REFIND_TAG#v}
+          CORE=${CODE_TAG#v}
           VERSION_BASE=${CORE%%-*}
           REST=${CORE#"$VERSION_BASE"}
-          REST=${REST%-reF1nd}
           TAG_SEG=${REST#-}
-          echo "reF1nd tag: $REFIND_TAG (version=$VERSION_BASE, tag_seg=$TAG_SEG)"
+          echo "code tag: $CODE_TAG (version=$VERSION_BASE, tag_seg=$TAG_SEG)"
           {
-            echo "refind_tag=$REFIND_TAG"
+            echo "code_tag=$CODE_TAG"
             echo "version_base=$VERSION_BASE"
             echo "tag_seg=$TAG_SEG"
           } >> "$GITHUB_OUTPUT"
@@ -104,7 +106,7 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REFIND_TAG: ${{ needs.build.outputs.refind_tag }}
+          CODE_TAG: ${{ needs.build.outputs.code_tag }}
           VERSION_BASE: ${{ needs.build.outputs.version_base }}
           TAG_SEG: ${{ needs.build.outputs.tag_seg }}
         run: |
@@ -116,9 +118,10 @@ jobs:
 
           git remote add upstream https://github.com/CHIZI-0618/sing-box.git 2>/dev/null || git remote set-url upstream https://github.com/CHIZI-0618/sing-box.git
 
-          git tag -f "$REFIND_TAG" HEAD
-          git push origin "$REFIND_TAG" --force
-          echo "tag pushed: $REFIND_TAG"
+          TAG_NAME="${CODE_TAG}-cz0618"
+          git tag -f "$TAG_NAME" HEAD
+          git push origin "$TAG_NAME" --force
+          echo "tag pushed: $TAG_NAME"
 
           git fetch --tags --force upstream
           CZ_HASH=$(git rev-parse --short=9 upstream/testing-ref1nd)
