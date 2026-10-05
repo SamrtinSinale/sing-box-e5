@@ -44,7 +44,9 @@ proxies:
 					require.Len(t, outbounds, 1)
 					options := outbounds[0].Options.(*option.VMessOutboundOptions)
 					expectedSecurity := cipher
-					if cipher == "auto" {
+					// Clash 省略 cipher 等同 auto：两者都要归一成 AEAD，
+					// 否则 sing-box 在 TLS 下会把它当 zero，服务端拒绝。
+					if cipher == "auto" || cipher == "" {
 						expectedSecurity = autoSecurity
 					}
 					require.Equal(t, expectedSecurity, options.Security)
@@ -81,6 +83,8 @@ func TestParseVMessAutoSecurityOtherFormats(t *testing.T) {
 		}`))
 		outbound, err := ParseSubscriptionLink(link)
 		require.NoError(t, err)
-		require.Equal(t, "auto", outbound.Options.(*option.VMessOutboundOptions).Security)
+		// 链接格式（mihomo / Xray）的 auto 要归一成 AEAD：sing-box 出站会把
+		// auto + TLS 变成 zero，服务端按 AEAD 解会拒绝。
+		require.Equal(t, expectedVMessAutoSecurity(), outbound.Options.(*option.VMessOutboundOptions).Security)
 	})
 }
