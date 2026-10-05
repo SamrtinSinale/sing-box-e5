@@ -21,7 +21,7 @@ jobs:
           - goarch: arm64
             compiler: aarch64-linux-android35-clang
     env:
-      TAGS: with_gvisor,with_quic,with_dhcp,with_utls,with_clash_api,with_connection_history,badlinkname,tfogo_checklinkname0,with_provider,with_ebpf
+      TAGS: with_gvisor,with_quic,with_dhcp,with_utls,with_clash_api,with_connection_history,with_xhttp,badlinkname,tfogo_checklinkname0,with_provider,with_ebpf
     steps:
       - name: Checkout
         uses: actions/checkout@v6
