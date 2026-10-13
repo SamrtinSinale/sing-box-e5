@@ -3,8 +3,10 @@ package clashapi
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
+	R "github.com/sagernet/sing-box/route/rule"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/render"
@@ -13,6 +15,7 @@ import (
 func ruleRouter(router adapter.Router, dnsRouter adapter.DNSRouter) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/", getRules(router, dnsRouter))
+	r.Patch("/disable", disableRules(router, dnsRouter))
 	r.Route("/{uuid}", func(r chi.Router) {
 		r.Use(parseRuleUUID, findRuleByUUID(router, dnsRouter))
 		r.Put("/", changeRuleStatus)
@@ -21,40 +24,91 @@ func ruleRouter(router adapter.Router, dnsRouter adapter.DNSRouter) http.Handler
 }
 
 type Rule struct {
+	Index   int    `json:"index"`
 	Type    string `json:"type"`
 	Payload string `json:"payload"`
 	Proxy   string `json:"proxy"`
+	Size    int    `json:"size"`
+
+	// Extra 与 mihomo RuleWrapper 的统计字段一致
+	Extra *RuleExtra `json:"extra,omitempty"`
 
 	Disabled bool   `json:"disabled,omitempty"`
 	UUID     string `json:"uuid,omitempty"`
 }
 
+type RuleExtra struct {
+	Disabled  bool      `json:"disabled"`
+	HitCount  uint64    `json:"hitCount"`
+	HitAt     time.Time `json:"hitAt"`
+	MissCount uint64    `json:"missCount"`
+	MissAt    time.Time `json:"missAt"`
+}
+
+// allRules 返回 /rules 列出的规则，下标即 Rule.Index：与 mihomo 一致先列出路由规则，
+// DNS 规则接在其后。
+func allRules(router adapter.Router, dnsRouter adapter.DNSRouter) []adapter.Rule {
+	routeRules := router.Rules()
+	dnsRules := dnsRouter.Rules()
+	rules := make([]adapter.Rule, 0, len(routeRules)+len(dnsRules))
+	rules = append(rules, routeRules...)
+	for _, rule := range dnsRules {
+		rules = append(rules, rule)
+	}
+	return rules
+}
+
 func getRules(router adapter.Router, dnsRouter adapter.DNSRouter) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var rules []Rule
-		for _, rule := range dnsRouter.Rules() {
+		rawRules := allRules(router, dnsRouter)
+		rules := make([]Rule, 0, len(rawRules))
+		for index, rule := range rawRules {
+			disabled := rule.Disabled()
+			ruleType, payload := R.ClashRule(rule)
 			rules = append(rules, Rule{
-				Type:    rule.Type(),
-				Payload: rule.String(),
-				Proxy:   rule.Action().String(),
+				Index:   index,
+				Type:    ruleType,
+				Payload: payload,
+				Proxy:   R.ClashProxy(rule.Action()),
+				Size:    -1,
+				Extra: &RuleExtra{
+					Disabled:  disabled,
+					HitCount:  rule.HitCount(),
+					HitAt:     rule.HitAt(),
+					MissCount: rule.MissCount(),
+					MissAt:    rule.MissAt(),
+				},
 
-				Disabled: rule.Disabled(),
-				UUID:     rule.UUID(),
-			})
-		}
-		for _, rule := range router.Rules() {
-			rules = append(rules, Rule{
-				Type:    rule.Type(),
-				Payload: rule.String(),
-				Proxy:   rule.Action().String(),
-
-				Disabled: rule.Disabled(),
+				Disabled: disabled,
 				UUID:     rule.UUID(),
 			})
 		}
 		render.JSON(w, r, render.M{
 			"rules": rules,
 		})
+	}
+}
+
+// disableRules 同 mihomo PATCH /rules/disable：按 /rules 返回的 index 设置禁用状态，
+// 请求体 key 为规则下标，value 为是否禁用；越界下标忽略。
+func disableRules(router adapter.Router, dnsRouter adapter.DNSRouter) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var payload map[int]bool
+		if err := render.DecodeJSON(r.Body, &payload); err != nil {
+			render.Status(r, http.StatusBadRequest)
+			render.JSON(w, r, ErrBadRequest)
+			return
+		}
+		if len(payload) != 0 {
+			rules := allRules(router, dnsRouter)
+			for index, disabled := range payload {
+				if index < 0 || index >= len(rules) {
+					continue
+				}
+				rules[index].SetDisabled(disabled)
+			}
+		}
+		render.NoContent(w, r)
 	}
 }
 

@@ -406,7 +406,57 @@ func (r *Router) wrapQUICSniffIdleCache(metadata adapter.InboundContext, onClose
 	}
 }
 
+// preMatchRuleEvaluations 记录 PreMatch 中顶层规则的求值结果（规则下标与是否命中）。
+// 常见规则数下只用内联数组，不在每个 flow 上分配。
+type preMatchRuleEvaluations struct {
+	inline   [64]preMatchRuleEvaluation
+	overflow []preMatchRuleEvaluation
+	length   int
+}
+
+type preMatchRuleEvaluation struct {
+	index   int
+	matched bool
+}
+
+func (e *preMatchRuleEvaluations) add(index int, matched bool) {
+	evaluation := preMatchRuleEvaluation{index: index, matched: matched}
+	if e.length < len(e.inline) {
+		e.inline[e.length] = evaluation
+	} else {
+		e.overflow = append(e.overflow, evaluation)
+	}
+	e.length++
+}
+
+func (e *preMatchRuleEvaluations) commit(rules []adapter.Rule) {
+	for i := 0; i < e.length; i++ {
+		var evaluation preMatchRuleEvaluation
+		if i < len(e.inline) {
+			evaluation = e.inline[i]
+		} else {
+			evaluation = e.overflow[i-len(e.inline)]
+		}
+		if evaluation.matched {
+			rules[evaluation.index].Hit()
+		} else {
+			rules[evaluation.index].Miss()
+		}
+	}
+}
+
 func (r *Router) PreMatch(metadata adapter.InboundContext, firstPacket []byte) adapter.PreMatchResult {
+	var evaluations preMatchRuleEvaluations
+	result := r.preMatch(metadata, firstPacket, &evaluations)
+	// PreMatchContinue 时连接随后会走 matchRule 重新求值并在那里计数，
+	// 只有 PreMatch 直接给出最终裁决（flow / bypass / reject / drop / hijack-dns）时才计入命中统计。
+	if result.Action != adapter.PreMatchContinue {
+		evaluations.commit(r.rules)
+	}
+	return result
+}
+
+func (r *Router) preMatch(metadata adapter.InboundContext, firstPacket []byte, evaluations *preMatchRuleEvaluations) adapter.PreMatchResult {
 	ctx := log.ContextWithNewID(r.ctx)
 	metadata.PreMatch = true
 	continueResult := adapter.PreMatchResult{Action: adapter.PreMatchContinue}
@@ -420,7 +470,9 @@ func (r *Router) PreMatch(metadata adapter.InboundContext, firstPacket []byte) a
 			continue
 		}
 		metadata.ResetRuleCache()
-		if !currentRule.Match(&metadata) {
+		matched := currentRule.Match(&metadata)
+		evaluations.add(currentRuleIndex, matched)
+		if !matched {
 			continue
 		}
 		ruleDescription := currentRule.String()
@@ -759,8 +811,10 @@ match:
 		}
 		metadata.ResetRuleCache()
 		if !currentRule.Match(metadata) {
+			currentRule.Miss()
 			continue
 		}
+		currentRule.Hit()
 		ruleDescription := currentRule.String()
 		if ruleDescription != "" {
 			r.logger.DebugContext(ctx, "match[", currentRuleIndex, "] ", currentRule, " => ", currentRule.Action())
@@ -907,7 +961,10 @@ func (r *Router) actionSniff(
 			action.Timeout,
 			streamSniffers...,
 		)
-		metadata.SnifferNames = action.SnifferNames
+		// 仅在 slice 真实变化时改写 SnifferNames，避免 header 拷贝污染缓存
+		if !slices.Equal(metadata.SnifferNames, action.SnifferNames) {
+			metadata.SnifferNames = action.SnifferNames
+		}
 		metadata.SniffError = err
 		if err == nil {
 			if metadata.SniffHost != "" && metadata.Client != "" {
@@ -929,6 +986,13 @@ func (r *Router) actionSniff(
 		} else if slices.Equal(metadata.SnifferNames, action.SnifferNames) && metadata.SniffError != nil && !errors.Is(metadata.SniffError, sniff.ErrNeedMoreData) {
 			r.logger.DebugContext(ctx, "packet sniff skipped due to previous error: ", metadata.SniffError)
 			return
+		}
+		// 一次性同步 SnifferNames，使后续两个循环内仅需更新 SniffError，
+		// 避免千次级分片循环中重复执行 slice header 拷贝。
+		// quicMoreData 闭包依赖的 slices.Equal 语义与原实现一致：
+		// 同步后相等性不变，只依赖 SniffError 是否为 ErrNeedMoreData。
+		if !slices.Equal(metadata.SnifferNames, action.SnifferNames) {
+			metadata.SnifferNames = action.SnifferNames
 		}
 		quicMoreData := func() bool {
 			return slices.Equal(metadata.SnifferNames, action.SnifferNames) && errors.Is(metadata.SniffError, sniff.ErrNeedMoreData)
@@ -955,7 +1019,7 @@ func (r *Router) actionSniff(
 					packetSniffers...,
 				)
 			}
-			metadata.SnifferNames = action.SnifferNames
+			// SnifferNames 已在循环外同步，此处仅需更新 SniffError
 			metadata.SniffError = err
 			if errors.Is(err, sniff.ErrNeedMoreData) {
 				// TODO: replace with generic message when there are more multi-packet protocols
@@ -1014,7 +1078,7 @@ func (r *Router) actionSniff(
 					Destination: destination,
 				}
 				packetBuffers = append(packetBuffers, packetBuffer)
-				metadata.SnifferNames = action.SnifferNames
+				// SnifferNames 已在循环外同步，此处仅需更新 SniffError
 				metadata.SniffError = err
 				if errors.Is(err, sniff.ErrNeedMoreData) {
 					// TODO: replace with generic message when there are more multi-packet protocols

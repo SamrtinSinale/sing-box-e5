@@ -138,19 +138,21 @@ func (r *Router) Initialize(rules []option.DNSRule) error {
 	return nil
 }
 
+func (r *Router) closeRules() error {
+	r.rulesAccess.Lock()
+	r.closing = true
+	runtimeRules := r.rules
+	r.rules = nil
+	r.rulesAccess.Unlock()
+	closeRules(runtimeRules)
+	return nil
+}
+
 func (r *Router) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	monitor := taskmonitor.New(r.logger, C.StartTimeout)
 	switch stage {
 	case adapter.StartStateStart:
-		scope.Add(func() error {
-			r.rulesAccess.Lock()
-			r.closing = true
-			runtimeRules := r.rules
-			r.rules = nil
-			r.rulesAccess.Unlock()
-			closeRules(runtimeRules)
-			return nil
-		})
+		scope.Add(r.closeRules)
 		monitor.Start("initialize DNS client")
 		r.client.Start()
 		monitor.Finish()
@@ -310,6 +312,15 @@ func (r *Router) matchDNS(ctx context.Context, rules []adapter.DNSRule, allowFak
 		metadata.ResetRuleCache()
 		metadata.DestinationAddressMatchFromResponse = false
 		if currentRule.LegacyPreMatch(metadata) {
+			// 带地址限制的 route 规则是否命中要等响应经 MatchAddressLimit 校验后才确定，
+			// 由 exchangeLegacy / Lookup 计数；其余情况预匹配即命中。
+			deferStatistics := currentRule.WithAddressLimit()
+			if _, isRoute := currentRule.Action().(*R.RuleActionDNSRoute); !isRoute {
+				deferStatistics = false
+			}
+			if !deferStatistics {
+				currentRule.Hit()
+			}
 			if ruleDescription := currentRule.String(); ruleDescription != "" {
 				r.logger.DebugContext(ctx, "match[", currentRuleIndex, "] ", currentRule, " => ", currentRule.Action())
 			} else {
@@ -320,10 +331,16 @@ func (r *Router) matchDNS(ctx context.Context, rules []adapter.DNSRule, allowFak
 				transport, loaded := r.transport.Transport(action.Server)
 				if !loaded {
 					r.logger.ErrorContext(ctx, "transport not found: ", action.Server)
+					if deferStatistics {
+						currentRule.Hit()
+					}
 					continue
 				}
 				isFakeIP := transport.Type() == C.DNSTypeFakeIP
 				if isFakeIP && !allowFakeIP {
+					if deferStatistics {
+						currentRule.Hit()
+					}
 					continue
 				}
 				if action.Strategy != C.DomainStrategyAsIS {
@@ -373,6 +390,8 @@ func (r *Router) matchDNS(ctx context.Context, rules []adapter.DNSRule, allowFak
 			case *R.RuleActionPredefined:
 				return nil, currentRule, currentRuleIndex
 			}
+		} else {
+			currentRule.Miss()
 		}
 	}
 	transport := r.transport.Default()
@@ -459,6 +478,9 @@ type dnsRuleWalkState struct {
 	terminalFuture   *dnsEvaluatedFuture
 	terminalIndex    int
 	wake             chan struct{}
+	// countedRules: 下标小于它的规则已计入命中统计；drain 挂起恢复后会对同一条
+	// 规则重新 Match，靠它保证每次查询每条规则只计一次。
+	countedRules int
 }
 
 func (s *dnsRuleWalkState) anonymousResponse() *mDNS.Msg {
@@ -673,7 +695,16 @@ func (r *Router) walkDNSRules(ctx context.Context, rules []adapter.DNSRule, mess
 		metadata.DNSResponse = state.anonymousResponse()
 		metadata.NamedDNSResponses = state.namedResponses
 		metadata.DestinationAddressMatchFromResponse = false
-		if !currentRule.Match(metadata) {
+		matched := currentRule.Match(metadata)
+		if state.ruleIndex >= state.countedRules {
+			state.countedRules = state.ruleIndex + 1
+			if matched {
+				currentRule.Hit()
+			} else {
+				currentRule.Miss()
+			}
+		}
+		if !matched {
 			continue
 		}
 		if state.lastLoggedIndex != state.ruleIndex {
@@ -867,8 +898,10 @@ func (r *Router) sweepArmedDNSRules(ctx context.Context, message *mDNS.Msg, stat
 		metadata.NamedDNSResponses = state.namedResponses
 		metadata.DestinationAddressMatchFromResponse = false
 		if !armed.rule.Match(metadata) {
+			armed.rule.Miss()
 			continue
 		}
+		armed.rule.Hit()
 		r.logRuleMatch(ctx, armed.ruleIndex, armed.rule)
 		switch action := armed.rule.Action().(type) {
 		case *R.RuleActionRespond:
@@ -1212,8 +1245,12 @@ func (r *Router) exchangeLegacy(ctx context.Context, exchangeCtx *dnsExchangeCon
 				r.logger.ErrorContext(ctx, E.Cause(err, "exchange failed for <empty query>"))
 			}
 		}
-		if responseCheck != nil && rejected {
-			continue
+		if responseCheck != nil {
+			if rejected {
+				rule.Miss()
+				continue
+			}
+			rule.Hit()
 		}
 		return response, transport, err
 	}
@@ -1383,6 +1420,13 @@ func (r *Router) Lookup(ctx context.Context, domain string, options adapter.DNSQ
 				dnsOptions.Strategy = r.defaultDomainStrategy
 			}
 			responseAddrs, err = r.client.Lookup(dnsCtx, transport, domain, dnsOptions, responseCheck)
+			if responseCheck != nil {
+				if errors.Is(err, ErrResponseRejected) {
+					rule.Miss()
+				} else {
+					rule.Hit()
+				}
+			}
 			if responseCheck == nil || err == nil {
 				break
 			}
