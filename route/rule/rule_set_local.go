@@ -129,6 +129,10 @@ func (s *LocalRuleSet) Update(ctx context.Context) error {
 	return nil
 }
 
+func (s *LocalRuleSet) PostStart() error {
+	return nil
+}
+
 func (s *LocalRuleSet) Close() error {
 	s.rules = nil
 	return common.Close(common.PtrOrNil(s.watcher))
