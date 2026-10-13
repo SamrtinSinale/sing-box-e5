@@ -73,6 +73,9 @@ type LoadBalance struct {
 	exclude         *regexp.Regexp
 	include         *regexp.Regexp
 	useAllProviders bool
+
+	hidden bool
+	icon   string
 }
 
 func NewLoadBalance(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.LoadBalanceOutboundOptions) (adapter.Outbound, error) {
@@ -105,17 +108,29 @@ func NewLoadBalance(ctx context.Context, router adapter.Router, logger log.Conte
 		exclude:         (*regexp.Regexp)(options.Exclude),
 		include:         (*regexp.Regexp)(options.Include),
 		useAllProviders: options.UseAllProviders,
+		hidden:          options.Hidden,
+		icon:            options.Icon,
 	}
 	return outbound, nil
 }
 
+func (s *LoadBalance) Hidden() bool { return s.hidden }
+func (s *LoadBalance) Icon() string { return s.icon }
+
 func (s *LoadBalance) Start(stage adapter.StartStage, scope *adapter.Scope) error {
-	if stage != adapter.StartStateStart {
-		if stage == adapter.StartStateStarted {
-			s.group.PostStart()
-		}
-		return nil
+	switch stage {
+	case adapter.StartStateStart:
+		return s.startGroup()
+	case adapter.StartStateStarted:
+		s.group.PostStart()
+		scope.Add(func() error {
+			return common.Close(common.PtrOrNil(s.group))
+		})
 	}
+	return nil
+}
+
+func (s *LoadBalance) startGroup() error {
 	s.providerAccess.Lock()
 	defer s.providerAccess.Unlock()
 	if s.useAllProviders {
@@ -157,11 +172,8 @@ func (s *LoadBalance) Start(stage adapter.StartStage, scope *adapter.Scope) erro
 	}
 	group.tag = s.Tag()
 	s.group = group
-	scope.Add(group.Close)
 	for _, providerTag := range s.providerTags {
-		p := s.providers[providerTag]
-		element := p.RegisterCallback(s.onProviderUpdated)
-		scope.Add(func() error { p.UnregisterCallback(element); return nil })
+		s.providers[providerTag].RegisterCallback(s.onProviderUpdated)
 	}
 	return nil
 }
@@ -253,6 +265,7 @@ func (s *LoadBalance) DialContext(ctx context.Context, network string, destinati
 	}
 	conn, err := outbound.DialContext(ctx, network, destination)
 	if err == nil {
+		adapter.RecordGroupDial(ctx, s.Tag(), outbound)
 		return s.group.interruptGroup.NewConn(conn, interrupt.IsExternalConnectionFromContext(ctx), interrupt.IsResourceDownloadFromContext(ctx)), nil
 	}
 	s.logger.ErrorContext(ctx, err)
@@ -269,6 +282,7 @@ func (s *LoadBalance) ListenPacket(ctx context.Context, destination M.Socksaddr)
 	}
 	conn, err := outbound.ListenPacket(ctx, destination)
 	if err == nil {
+		adapter.RecordGroupDial(ctx, s.Tag(), outbound)
 		return s.group.interruptGroup.NewPacketConn(conn, interrupt.IsExternalConnectionFromContext(ctx), interrupt.IsResourceDownloadFromContext(ctx)), nil
 	}
 	s.logger.ErrorContext(ctx, err)
@@ -339,7 +353,7 @@ type LoadBalanceGroup struct {
 	interval        time.Duration
 	idleTimeout     time.Duration
 	ttl             time.Duration
-	history         *urltest.HistoryStorage
+	history         adapter.URLTestHistoryStorage
 	checking        sync.Mutex
 	fallbackIdx     atomic.Uint32
 	fallbackAccess  sync.Mutex
@@ -366,9 +380,11 @@ func NewLoadBalanceGroup(ctx context.Context, outboundManager adapter.OutboundMa
 	if ttl == 0 {
 		ttl = time.Minute * 10
 	}
-	history := service.PtrFromContext[urltest.HistoryStorage](ctx)
-	if history == nil {
-		return nil, E.New("missing URL test history storage")
+	var history adapter.URLTestHistoryStorage
+	if historyFromCtx := service.PtrFromContext[urltest.HistoryStorage](ctx); historyFromCtx != nil {
+		history = historyFromCtx
+	} else {
+		history = urltest.NewHistoryStorage()
 	}
 	if link == "" {
 		link = "https://www.gstatic.com/generate_204"
@@ -500,14 +516,14 @@ func (g *LoadBalanceGroup) urlTestLocked(ctx context.Context, force bool) (map[s
 	return result, nil
 }
 
-func updateLoadBalanceURLTestHistory(outboundManager adapter.OutboundManager, history *urltest.HistoryStorage, tag string, outbounds []adapter.Outbound) *adapter.URLTestHistory {
+func updateLoadBalanceURLTestHistory(outboundManager adapter.OutboundManager, history adapter.URLTestHistoryStorage, tag string, outbounds []adapter.Outbound) *adapter.URLTestHistory {
 	leaves := collectLoadBalanceURLTestLeafHistory(outboundManager, history, outbounds, make(map[string]bool))
 	return updateLoadBalanceURLTestHistoryFromLeaves(history, tag, leaves)
 }
 
 // collectLoadBalanceURLTestLeafHistory follows the selected member of selector-like groups,
 // but includes every member of load-balance groups, which have no global selection.
-func collectLoadBalanceURLTestLeafHistory(outboundManager adapter.OutboundManager, history *urltest.HistoryStorage, outbounds []adapter.Outbound, visiting map[string]bool) map[string]*adapter.URLTestHistory {
+func collectLoadBalanceURLTestLeafHistory(outboundManager adapter.OutboundManager, history adapter.URLTestHistoryStorage, outbounds []adapter.Outbound, visiting map[string]bool) map[string]*adapter.URLTestHistory {
 	leaves := make(map[string]*adapter.URLTestHistory)
 	for _, detour := range outbounds {
 		if detour == nil {
@@ -543,7 +559,7 @@ func collectLoadBalanceURLTestLeafHistory(outboundManager adapter.OutboundManage
 	return leaves
 }
 
-func updateLoadBalanceURLTestHistoryFromLeaves(history *urltest.HistoryStorage, tag string, leaves map[string]*adapter.URLTestHistory) *adapter.URLTestHistory {
+func updateLoadBalanceURLTestHistoryFromLeaves(history adapter.URLTestHistoryStorage, tag string, leaves map[string]*adapter.URLTestHistory) *adapter.URLTestHistory {
 	if len(leaves) == 0 {
 		if history.LoadURLTestHistory(tag) != nil {
 			history.DeleteURLTestHistory(tag)

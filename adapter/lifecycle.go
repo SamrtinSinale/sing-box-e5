@@ -9,6 +9,7 @@ import (
 	"github.com/sagernet/sing-box/common/taskmonitor"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
+	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 	F "github.com/sagernet/sing/common/format"
 )
@@ -68,8 +69,15 @@ type Scope struct {
 	cancel   context.CancelFunc
 	logger   log.ContextLogger
 	access   sync.Mutex
-	cleanups []func() error
+	cleanups []scopeCleanup
 	children map[Lifecycle]*Scope
+}
+
+// scopeCleanup pairs a registered cleanup with the component that owns it,
+// so CloseChild can drop the cleanup of a component removed at runtime.
+type scopeCleanup struct {
+	owner   Lifecycle
+	cleanup func() error
 }
 
 func NewScope(ctx context.Context, logger log.ContextLogger) *Scope {
@@ -88,7 +96,7 @@ func (s *Scope) Context() context.Context {
 
 func (s *Scope) Add(cleanup func() error) {
 	s.access.Lock()
-	s.cleanups = append(s.cleanups, cleanup)
+	s.cleanups = append(s.cleanups, scopeCleanup{cleanup: cleanup})
 	s.access.Unlock()
 }
 
@@ -103,7 +111,7 @@ func (s *Scope) Start(name string, component Lifecycle, stage StartStage) error 
 	if !loaded {
 		child = NewScope(s.ctx, s.logger)
 		s.children[component] = child
-		s.cleanups = append(s.cleanups, func() error {
+		s.cleanups = append(s.cleanups, scopeCleanup{owner: component, cleanup: func() error {
 			done := LogElapsed(s.logger, "close ", name)
 			monitor := taskmonitor.New(s.logger, C.StopTimeout)
 			monitor.Start("close ", name)
@@ -114,7 +122,7 @@ func (s *Scope) Start(name string, component Lifecycle, stage StartStage) error 
 				return E.Cause(closeErr, "close ", name)
 			}
 			return nil
-		})
+		}})
 	}
 	s.access.Unlock()
 	done := LogElapsed(s.logger, stage, " ", name)
@@ -136,11 +144,32 @@ func (s *Scope) Close() error {
 	s.cleanups = nil
 	s.children = nil
 	s.access.Unlock()
-	var err error
+	var cleanupErrors []error
 	for _, cleanup := range slices.Backward(cleanups) {
-		err = E.Errors(err, cleanup())
+		cleanupErrors = append(cleanupErrors, E.Expand(cleanup.cleanup())...)
 	}
-	return err
+	return E.Errors(common.Filter(cleanupErrors, func(it error) bool {
+		return !E.IsClosed(it) && !E.IsCanceled(it)
+	})...)
+}
+
+// CloseChild closes the child scope of a component that is replaced or
+// removed at runtime (outbound provider members) and drops its cleanup, so a
+// long-running scope does not keep one for every component it ever started.
+func (s *Scope) CloseChild(component Lifecycle) error {
+	s.access.Lock()
+	child, loaded := s.children[component]
+	if loaded {
+		delete(s.children, component)
+		s.cleanups = slices.DeleteFunc(s.cleanups, func(it scopeCleanup) bool {
+			return it.owner == component
+		})
+	}
+	s.access.Unlock()
+	if !loaded {
+		return nil
+	}
+	return child.Close()
 }
 
 func LogElapsed(logger log.ContextLogger, description ...any) func() {

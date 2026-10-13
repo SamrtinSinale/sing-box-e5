@@ -5853,6 +5853,64 @@
         },
         "urltest_unified_delay": {
           "type": "boolean"
+        },
+        "smart": {
+          "$ref": "#/$defs/SmartOptions"
+        },
+        "geox": {
+          "$ref": "#/$defs/GeoXOptions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GeoXOptions": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "url": {
+          "$ref": "#/$defs/GeoXURLOptions"
+        },
+        "auto_update": {
+          "type": "boolean"
+        },
+        "update_interval": {
+          "$ref": "#/$defs/Duration"
+        },
+        "http_client": {
+          "$ref": "#/$defs/HTTPClientReference"
+        },
+        "download_detour": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GeoXURLOptions": {
+      "type": "object",
+      "properties": {
+        "geoip": {
+          "type": "string"
+        },
+        "geosite": {
+          "type": "string"
+        },
+        "mmdb": {
+          "type": "string"
+        },
+        "asn": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -13513,6 +13571,12 @@
             "use_all_providers": {
               "type": "boolean"
             },
+            "hidden": {
+              "type": "boolean"
+            },
+            "icon": {
+              "type": "string"
+            },
             "url": {
               "type": "string"
             },
@@ -13779,6 +13843,12 @@
             },
             "use_all_providers": {
               "type": "boolean"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "icon": {
+              "type": "string"
             },
             "default": {
               "type": "string",
@@ -14131,6 +14201,235 @@
             },
             "tls": {
               "$ref": "#/$defs/OutboundTLSOptions"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "smart"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "outbounds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "x-tag-reference": "outbound"
+              }
+            },
+            "providers": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "x-tag-reference": "provider"
+              }
+            },
+            "exclude": {
+              "type": "string"
+            },
+            "include": {
+              "type": "string"
+            },
+            "use_all_providers": {
+              "type": "boolean"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "icon": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            },
+            "interval": {
+              "$ref": "#/$defs/Duration"
+            },
+            "expected_status": {
+              "type": "string"
+            },
+            "interrupt_exist_connections": {
+              "type": "boolean"
+            },
+            "disable_udp": {
+              "type": "boolean"
+            },
+            "use_asn": {
+              "type": "boolean"
+            },
+            "use_lightgbm": {
+              "type": "boolean"
+            },
+            "collect_data": {
+              "type": "boolean"
+            },
+            "sample_rate": {
+              "type": "number"
+            },
+            "max_host_failed_times": {
+              "type": "integer"
+            },
+            "algorithm": {
+              "type": "string"
+            },
+            "hysteresis": {
+              "$ref": "#/$defs/Duration"
+            },
+            "policy_priority": {
+              "type": "string"
+            },
+            "asn_database": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "smart-loadbalance"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "outbounds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "x-tag-reference": "outbound"
+              }
+            },
+            "providers": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "x-tag-reference": "provider"
+              }
+            },
+            "exclude": {
+              "type": "string"
+            },
+            "include": {
+              "type": "string"
+            },
+            "use_all_providers": {
+              "type": "boolean"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "icon": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            },
+            "interval": {
+              "$ref": "#/$defs/Duration"
+            },
+            "expected_status": {
+              "type": "string"
+            },
+            "interrupt_exist_connections": {
+              "type": "boolean"
+            },
+            "disable_udp": {
+              "type": "boolean"
+            },
+            "use_asn": {
+              "type": "boolean"
+            },
+            "use_lightgbm": {
+              "type": "boolean"
+            },
+            "collect_data": {
+              "type": "boolean"
+            },
+            "sample_rate": {
+              "type": "number"
+            },
+            "max_host_failed_times": {
+              "type": "integer"
+            },
+            "algorithm": {
+              "type": "string"
+            },
+            "hysteresis": {
+              "$ref": "#/$defs/Duration"
+            },
+            "policy_priority": {
+              "type": "string"
+            },
+            "asn_database": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            "balance": {
+              "$ref": "#/$defs/SmartBalanceOptions"
+            },
+            "region": {
+              "$ref": "#/$defs/SmartRegionOptions"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "smart-region"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "group": {
+              "type": "string",
+              "x-tag-reference": "outbound"
+            },
+            "region": {
+              "type": "string"
+            },
+            "fallback": {
+              "type": "boolean"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "icon": {
+              "type": "string"
             }
           },
           "required": [
@@ -16276,6 +16575,12 @@
             "use_all_providers": {
               "type": "boolean"
             },
+            "hidden": {
+              "type": "boolean"
+            },
+            "icon": {
+              "type": "string"
+            },
             "url": {
               "type": "string"
             },
@@ -16295,6 +16600,9 @@
             },
             "fallback": {
               "$ref": "#/$defs/URLTestFallbackOptions"
+            },
+            "expected_status": {
+              "type": "string"
             }
           },
           "required": [
@@ -20721,6 +21029,306 @@
         },
         "password": {
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SmartBalanceOptions": {
+      "type": "object",
+      "properties": {
+        "strategy": {
+          "type": "string"
+        },
+        "affinity": {
+          "type": "string"
+        },
+        "affinity_ttl": {
+          "$ref": "#/$defs/Duration"
+        },
+        "max_nodes": {
+          "type": "integer"
+        },
+        "min_quality": {
+          "type": "number"
+        },
+        "max_connections_per_node": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SmartCollectorOptions": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "size_limit_mb": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SmartLightGBMOptions": {
+      "type": "object",
+      "properties": {
+        "model_path": {
+          "type": "string"
+        },
+        "auto_update": {
+          "type": "boolean"
+        },
+        "url": {
+          "type": "string"
+        },
+        "update_interval": {
+          "$ref": "#/$defs/Duration"
+        },
+        "http_client": {
+          "$ref": "#/$defs/HTTPClientReference"
+        },
+        "download_detour": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SmartOptions": {
+      "type": "object",
+      "properties": {
+        "lightgbm": {
+          "$ref": "#/$defs/SmartLightGBMOptions"
+        },
+        "collector": {
+          "$ref": "#/$defs/SmartCollectorOptions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SmartRegionDestinationOptions": {
+      "type": "object",
+      "properties": {
+        "map": {
+          "type": "object",
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          }
+        },
+        "disable_tld": {
+          "type": "boolean"
+        },
+        "disable_resolve": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SmartRegionDetectOptions": {
+      "type": "object",
+      "properties": {
+        "disable_name": {
+          "type": "boolean"
+        },
+        "exit": {
+          "type": "string"
+        },
+        "exit_url": {
+          "type": "string"
+        },
+        "exit_ttl": {
+          "$ref": "#/$defs/Duration"
+        },
+        "exit_timeout": {
+          "$ref": "#/$defs/Duration"
+        },
+        "exit_concurrency": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SmartRegionOptions": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string"
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "allow": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "deny": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "weights": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "fallback": {
+          "type": "string"
+        },
+        "min_nodes": {
+          "type": "integer"
+        },
+        "sticky": {
+          "$ref": "#/$defs/Duration"
+        },
+        "switch_margin": {
+          "type": "number"
+        },
+        "unknown": {
+          "type": "string"
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SmartRegionRule"
+          }
+        },
+        "destination": {
+          "$ref": "#/$defs/SmartRegionDestinationOptions"
+        },
+        "detect": {
+          "$ref": "#/$defs/SmartRegionDetectOptions"
+        },
+        "probe": {
+          "$ref": "#/$defs/SmartRegionProbeOptions"
+        },
+        "outbounds": {
+          "$ref": "#/$defs/SmartRegionOutboundsOptions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SmartRegionOutboundsOptions": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "regions": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "auto": {
+          "type": "boolean"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "hidden": {
+          "type": "boolean"
+        },
+        "icon": {
+          "type": "string"
+        },
+        "fallback": {
+          "type": "boolean"
+        },
+        "members": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SmartRegionProbeOptions": {
+      "type": "object",
+      "properties": {
+        "disabled": {
+          "type": "boolean"
+        },
+        "interval": {
+          "$ref": "#/$defs/Duration"
+        },
+        "targets": {
+          "type": "integer"
+        },
+        "regions": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SmartRegionRule": {
+      "type": "object",
+      "properties": {
+        "region": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "icon": {
+          "type": "string"
+        },
+        "match": {
+          "type": "string"
+        },
+        "outbounds": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
         }
       },
       "additionalProperties": false

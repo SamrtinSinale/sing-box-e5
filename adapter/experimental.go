@@ -9,6 +9,7 @@ import (
 
 	"github.com/sagernet/sing-box/common/hash"
 	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/sagernet/sing/common/observable"
 	"github.com/sagernet/sing/common/varbin"
 )
 
@@ -17,9 +18,72 @@ type URLTestHistory struct {
 	Delay uint16    `json:"delay"`
 }
 
+type URLTestHistoryStorage interface {
+	AddUpdateHook(hook *observable.Subscriber[struct{}])
+	NotifyUpdated()
+	LoadURLTestHistory(tag string) *URLTestHistory
+	DeleteURLTestHistory(tag string)
+	StoreURLTestHistory(tag string, history *URLTestHistory)
+	Close() error
+}
+
 type V2RayServer interface {
 	LifecycleService
 	StatsService() ConnectionTracker
+}
+
+// SmartService is the singleton that owns infrastructure shared by all Smart
+// outbound groups: the LightGBM model, its auto-updater, and the training
+// sample collector. It is registered on startup when experimental.smart is
+// configured; Smart groups retrieve it via service.FromContext and opt in
+// per-group via their use_lightgbm / collect_data flags.
+//
+// The concrete type lives in experimental/smart. Callers that need typed
+// accessors (e.g. for LightGBM model / collector) should type-assert to the
+// concrete *smart.Service.
+type SmartService interface {
+	LifecycleService
+	// LightGBMEnabled reports whether the shared ML model is configured.
+	LightGBMEnabled() bool
+	// CollectorEnabled reports whether the shared training-data collector is configured.
+	CollectorEnabled() bool
+}
+
+// GeoXService is the singleton that downloads and tracks global geo data
+// assets (geoip.dat / geosite.dat / country.mmdb / GeoLite2-ASN.mmdb).
+//
+// Other services (currently only Smart group, via use_asn) retrieve local
+// file paths through this service when their per-group config leaves the
+// corresponding path empty. Databases opened through common/geodb are
+// reloaded in place whenever GeoX downloads a new copy.
+type GeoXService interface {
+	LifecycleService
+
+	// Enabled reports whether experimental.geox.enabled was set.
+	Enabled() bool
+
+	// GeoIPPath returns the local path of the downloaded geoip.dat, or
+	// "" if not configured / not yet downloaded.
+	GeoIPPath() string
+	// GeoSitePath returns the local path of the downloaded geosite.dat.
+	GeoSitePath() string
+	// MMDBPath returns the local path of the downloaded country.mmdb.
+	MMDBPath() string
+	// ASNPath returns the FIRST local ASN mmdb path (back-compat with the
+	// single-source API). Empty if no ASN URL is configured. Callers that
+	// want fallback across multiple providers should use ASNPaths().
+	ASNPath() string
+	// ASNPaths returns every configured ASN mmdb path in priority order.
+	// Empty slice when no ASN URL is configured.
+	ASNPaths() []string
+
+	// RequireDefaultASN and RequireDefaultMMDB return the path of the
+	// built-in default ASN / country database, for consumers that need one
+	// the configuration does not provide. The first call starts downloading
+	// it with GeoX's http client and update settings, whether or not GeoX
+	// is enabled.
+	RequireDefaultASN() string
+	RequireDefaultMMDB() string
 }
 
 type CacheFile interface {
@@ -164,11 +228,37 @@ type OutboundGroup interface {
 	AttachConnection(closer io.Closer) (detach func())
 }
 
+// OutboundGroupHint exposes the dashboard hints from option.GroupCommonOption.
+// It is optional: all four built-in groups (Selector / URLTest / LoadBalance /
+// Smart) implement it, and groups that don't are rendered as hidden=false,
+// icon="".
+type OutboundGroupHint interface {
+	OutboundGroup
+
+	// Hidden reports whether Clash-style front-ends should keep this group
+	// out of the proxy switcher; routing rules continue to work either way.
+	Hidden() bool
+
+	// Icon returns the opaque dashboard icon string (URL / data URI /
+	// emoji). Empty means "no icon configured" and front-ends should fall
+	// back to their default rendering.
+	Icon() string
+}
+
 // ConnectionOutboundGroup selects a member for a particular connection rather
 // than exposing a single globally selected member.
 type ConnectionOutboundGroup interface {
 	OutboundGroup
 	SelectConnection(metadata *InboundContext) Outbound
+}
+
+// DialingOutboundGroup is a group whose own DialContext / ListenPacket must
+// stay in the connection path. The router stops chain resolution at such a
+// group instead of dialing its Selected member directly, so the group keeps
+// observing every dial (Smart learning and breakers, URLTest failover).
+type DialingOutboundGroup interface {
+	OutboundGroup
+	DialThroughGroup()
 }
 
 // ConnectionFailureListener is notified when dialing a resolved outbound chain fails.
