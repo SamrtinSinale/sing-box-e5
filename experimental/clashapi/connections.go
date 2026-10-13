@@ -11,9 +11,11 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/trafficcontrol"
 	C "github.com/sagernet/sing-box/constant"
+	"github.com/sagernet/sing-box/protocol/group"
 	"github.com/sagernet/sing/common"
 	F "github.com/sagernet/sing/common/format"
 	"github.com/sagernet/sing/common/json"
+	"github.com/sagernet/sing/service"
 	"github.com/sagernet/ws"
 	"github.com/sagernet/ws/wsutil"
 
@@ -27,6 +29,10 @@ func connectionRouter(ctx context.Context, network adapter.NetworkManager, traff
 	r.Get("/", getConnections(ctx, trafficManager))
 	r.Delete("/", closeAllConnections(ctx, network, trafficManager))
 	r.Delete("/{id}", closeConnection(trafficManager))
+	// Smart-block: close the connection AND mark its upstream Smart-selected
+	// node as blocked so the group stops selecting it for a cooldown window.
+	// Mirrors mihomo's `DELETE /connections/smart/{id}`.
+	r.Delete("/smart/{id}", smartBlockConnection(ctx, trafficManager))
 	return r
 }
 
@@ -48,6 +54,7 @@ func connectionsSnapshot(trafficManager *trafficcontrol.Manager) render.M {
 type connectionObject trafficcontrol.TrackerMetadata
 
 func (c connectionObject) MarshalJSON() ([]byte, error) {
+	metadata := trafficcontrol.TrackerMetadata(c)
 	var inbound string
 	if c.Metadata.Inbound != "" {
 		inbound = c.Metadata.InboundType + "/" + c.Metadata.Inbound
@@ -83,6 +90,7 @@ func (c connectionObject) MarshalJSON() ([]byte, error) {
 			processPath = F.ToString(processPath, " (", c.Metadata.ProcessInfo.UserId, ")")
 		}
 	}
+	// 规则展示保持 testing-ref1nd 原样；smart 只补 chains 的真实节点
 	var rule string
 	if c.Rule != nil {
 		rule = F.ToString(c.Rule, " => ", c.Rule.Action())
@@ -106,7 +114,7 @@ func (c connectionObject) MarshalJSON() ([]byte, error) {
 		"upload":      c.Upload.Load(),
 		"download":    c.Download.Load(),
 		"start":       c.CreatedAt,
-		"chains":      c.Chain,
+		"chains":      metadata.ResolvedChain(),
 		"rule":        rule,
 		"rulePayload": "",
 	})
@@ -183,5 +191,79 @@ func closeAllConnections(ctx context.Context, network adapter.NetworkManager, tr
 		trafficManager.CloseAllConnections()
 		network.ResetNetwork(ctx)
 		render.NoContent(w, r)
+	}
+}
+
+// smartBlockConnection closes the connection identified by id and, if it was
+// routed through a Smart group, additionally marks the selected node as
+// blocked within that group. Looks up the group and its downstream node via
+// the connection's RealOutboundChain.
+func smartBlockConnection(ctx context.Context, trafficManager *trafficcontrol.Manager) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := uuid.FromStringOrNil(chi.URLParam(r, "id"))
+		if id == uuid.Nil {
+			render.Status(r, http.StatusBadRequest)
+			render.JSON(w, r, ErrBadRequest)
+			return
+		}
+		tracker := trafficManager.Connection(id)
+		if tracker == nil {
+			render.Status(r, http.StatusNotFound)
+			render.JSON(w, r, ErrNotFound)
+			return
+		}
+		target := tracker.Metadata()
+		tracker.Close()
+		if target == nil {
+			render.Status(r, http.StatusNotFound)
+			render.JSON(w, r, ErrNotFound)
+			return
+		}
+
+		// Walk the chain looking for a Smart group. The slot immediately after
+		// the Smart tag is the node it dialed for this connection (recorded by
+		// the dial trace); Now() is only a fallback when the dial left no trace.
+		chain := common.Map(target.ResolvedOutboundChain(), adapter.Outbound.Tag)
+		outboundMgr := service.FromContext[adapter.OutboundManager](ctx)
+		if outboundMgr == nil {
+			render.NoContent(w, r)
+			return
+		}
+		var blocked struct {
+			Group string `json:"group,omitempty"`
+			Node  string `json:"node,omitempty"`
+		}
+		for i, tag := range chain {
+			ob, ok := outboundMgr.Outbound(tag)
+			if !ok {
+				continue
+			}
+			sg, ok := ob.(*group.Smart)
+			if !ok {
+				// A smart-region outbound blocks the node in its group.
+				region, isRegion := ob.(*group.SmartRegion)
+				if !isRegion || region.Parent() == nil {
+					continue
+				}
+				sg = region.Parent()
+			}
+			nodeTag := ""
+			if i+1 < len(chain) {
+				nodeTag = chain[i+1]
+			}
+			if nodeTag == "" {
+				nodeTag = sg.Now()
+			}
+			if nodeTag == "" {
+				break
+			}
+			if err := sg.MarkBlocked(nodeTag, group.DefaultBlockDuration); err == nil {
+				blocked.Group = tag
+				blocked.Node = nodeTag
+			}
+			break
+		}
+
+		render.JSON(w, r, blocked)
 	}
 }

@@ -88,10 +88,11 @@ func TestURLTestSelectionKeepsCurrentWithinTolerance(t *testing.T) {
 	history.StoreURLTestHistory(candidate.tag, &adapter.URLTestHistory{Time: time.Now(), Delay: 60})
 	group := &URLTestGroup{
 		outbound:  manager,
-		outbounds: []adapter.Outbound{current, candidate},
 		history:   history,
 		tolerance: 50,
 	}
+	group.storeOutbounds([]adapter.Outbound{current, candidate})
+	group.rebuildRankedCandidates()
 	group.selectedOutboundTCP.Store(current)
 
 	selected, available := group.Select(N.NetworkTCP)
@@ -99,6 +100,7 @@ func TestURLTestSelectionKeepsCurrentWithinTolerance(t *testing.T) {
 	require.Same(t, current, selected)
 
 	history.StoreURLTestHistory(candidate.tag, &adapter.URLTestHistory{Time: time.Now(), Delay: 49})
+	group.rebuildRankedCandidates()
 	selected, available = group.Select(N.NetworkTCP)
 	require.True(t, available)
 	require.Same(t, candidate, selected)
@@ -115,11 +117,11 @@ func TestURLTestFallbackSelectsFirstAvailable(t *testing.T) {
 	history.StoreURLTestHistory(first.tag, &adapter.URLTestHistory{Time: time.Now(), Delay: 100})
 	history.StoreURLTestHistory(second.tag, &adapter.URLTestHistory{Time: time.Now(), Delay: 20})
 	group := &URLTestGroup{
-		outbound:  manager,
-		outbounds: []adapter.Outbound{first, second},
-		history:   history,
-		fallback:  URLTestFallback{enabled: true},
+		outbound: manager,
+		history:  history,
+		fallback: URLTestFallback{enabled: true},
 	}
+	group.storeOutbounds([]adapter.Outbound{first, second})
 
 	selected, available := group.Select(N.NetworkTCP)
 	require.True(t, available)
@@ -161,14 +163,14 @@ func newURLTestForRecursiveTest(tag string, link string, manager adapter.Outboun
 		memberTags = append(memberTags, member.Tag())
 	}
 	group := &URLTestGroup{
-		ctx:       context.Background(),
-		outbound:  manager,
-		logger:    log.NewNOPFactory().Logger(),
-		outbounds: outbounds,
-		link:      link,
-		interval:  time.Hour,
-		history:   history,
+		ctx:      context.Background(),
+		outbound: manager,
+		logger:   log.NewNOPFactory().Logger(),
+		link:     link,
+		interval: time.Hour,
+		history:  history,
 	}
+	group.storeOutbounds(outbounds)
 	return &URLTest{
 		Adapter: adapterOutbound.NewAdapter(C.TypeURLTest, tag, []string{N.NetworkTCP, N.NetworkUDP}, memberTags),
 		group:   group,

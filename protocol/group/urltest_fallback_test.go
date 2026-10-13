@@ -21,9 +21,10 @@ func TestFallbackChoosesFastestWhenAllExceedThreshold(t *testing.T) {
 	history.StoreURLTestHistory(slow.Tag(), &adapter.URLTestHistory{Delay: 500})
 	history.StoreURLTestHistory(fast.Tag(), &adapter.URLTestHistory{Delay: 200})
 	group := &URLTestGroup{
-		outbounds: []adapter.Outbound{slow, fast}, history: history,
+		history:  history,
 		fallback: URLTestFallback{enabled: true, maxDelay: 100},
 	}
+	group.storeOutbounds([]adapter.Outbound{slow, fast})
 	group.selectedOutboundTCP.Store(slow)
 	group.selectedOutboundUDP.Store(slow)
 	for _, network := range []string{N.NetworkTCP, N.NetworkUDP} {
@@ -44,9 +45,10 @@ func TestFallbackLongMaximumDelayDoesNotWrap(t *testing.T) {
 	history.StoreURLTestHistory(first.Tag(), &adapter.URLTestHistory{Delay: 5000})
 	history.StoreURLTestHistory(second.Tag(), &adapter.URLTestHistory{Delay: 2000})
 	group := &URLTestGroup{
-		outbounds: []adapter.Outbound{first, second}, history: history,
+		history:  history,
 		fallback: instance.(*URLTest).fallback,
 	}
+	group.storeOutbounds([]adapter.Outbound{first, second})
 	selected, available := group.Select(N.NetworkTCP)
 	require.True(t, available)
 	require.Same(t, first, selected)
