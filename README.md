@@ -1,5 +1,8 @@
 # sing-box
 
+> **E5 内核构建仓库** — 上游跟随 `CHIZI-0618/sing-box:testing-ref1nd`（reF1nd 线），移植了 MiChongs 的 XHTTP transport 与 Smart 出站组；CI 打包后发到 Telegram 频道。
+> 移植清单、配置示例与发布规则见 [docs/e5.md](docs/e5.md)。
+
 The universal proxy platform.
 
 [![Packaging status](https://repology.org/badge/vertical-allrepos/sing-box.svg)](https://repology.org/project/sing-box/versions)
