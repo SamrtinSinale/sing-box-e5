@@ -39,16 +39,24 @@ jobs:
         with:
           ndk-version: r29
 
-      - name: Resolve version from reF1nd tag contained in code
+      - name: Resolve version from tag contained in code
         id: ver
         run: |
+          # tag 池 = reF1nd 镜像 + CHIZI 上游。必须并入 CHIZI：
+          # 上游重写历史后，SagerNet 的裸 tag 会指向旧提交
+          # （SagerNet v1.15.0-alpha.12 = 25b0d5ea3 不在 CHIZI 线上），
+          # 只有 CHIZI 仓里的同名 tag（e4b7e692f）指向他线上的提交。
           git fetch --no-tags --force https://github.com/reF1nd/sing-box.git 'refs/tags/*:refs/tags/rf/*'
+          git fetch --no-tags --force https://github.com/CHIZI-0618/sing-box.git 'refs/tags/*:refs/tags/cz/*'
           CODE_TAG=""
-          for t in $(git tag -l 'rf/v*' | sed 's|^rf/||' | sort -Vr | head -60); do
-            if git merge-base --is-ancestor "rf/$t" HEAD; then CODE_TAG="$t"; break; fi
+          for t in $( { git tag -l 'rf/v*' | sed 's|^rf/||'; git tag -l 'cz/v*' | sed 's|^cz/||'; } | sort -Vu | sort -Vr | head -60); do
+            for pre in rf cz; do
+              c=$(git rev-parse -q --verify "$pre/$t^{commit}" 2>/dev/null) || continue
+              if git merge-base --is-ancestor "$c" HEAD; then CODE_TAG="$t"; break 2; fi
+            done
           done
           if [ -z "$CODE_TAG" ]; then
-            echo "ERROR: 代码里找不到匹配的 reF1nd tag（tag fetch 失败？）" >&2
+            echo "ERROR: 代码里找不到匹配的 tag（rf/cz fetch 失败？）" >&2
             exit 1
           fi
           CODE_TAG=${CODE_TAG%%-reF1nd*}
