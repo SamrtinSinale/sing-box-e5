@@ -138,6 +138,7 @@ type EBPFDiagnostics struct {
 	TCListenerLookupMode          string     `json:"tc_listener_lookup_mode,omitempty"`
 	TCAttachmentMode              string     `json:"tc_attachment_mode,omitempty"`
 	TCDeliveryInterface           string     `json:"tc_delivery_interface,omitempty"`
+	TCNetworkNamespace            string     `json:"tc_network_namespace,omitempty"`
 	TCDeliveryInterfaceIndex      int        `json:"tc_delivery_interface_index,omitempty"`
 	TCRoutingMark                 uint32     `json:"tc_routing_mark,omitempty"`
 	TCRoutingTable                int        `json:"tc_routing_table,omitempty"`
@@ -150,6 +151,13 @@ type EBPFDiagnostics struct {
 	TCLastHealthCheckAt           *time.Time `json:"tc_last_health_check_at,omitempty"`
 	TCLastReconcileAt             *time.Time `json:"tc_last_reconcile_at,omitempty"`
 	TCNetworkGeneration           uint64     `json:"tc_network_generation,omitempty"`
+	TCReturnSweepEntries          uint64     `json:"tc_return_sweep_entries"`
+	TCReturnSweepCapacity         uint64     `json:"tc_return_sweep_capacity"`
+	TCReturnSweepScanned          uint64     `json:"tc_return_sweep_scanned"`
+	TCReturnSweepRemoved          uint64     `json:"tc_return_sweep_removed"`
+	TCAssignmentSweepUsageKnown   bool       `json:"tc_assignment_sweep_usage_known"`
+	TCReturnSweepUsageKnown       bool       `json:"tc_return_sweep_usage_known"`
+	TCAssignmentSweepFailureMap   string     `json:"tc_assignment_sweep_failure_map"`
 	TCAssignmentSweepScanned      uint64     `json:"tc_assignment_sweep_scanned,omitempty"`
 	TCAssignmentSweepRemoved      uint64     `json:"tc_assignment_sweep_removed,omitempty"`
 	TCAssignmentSweepComplete     bool       `json:"tc_assignment_sweep_complete"`
@@ -387,6 +395,7 @@ func diagnosticsForAPI(diagnostics EBPFDiagnostics) adapter.EBPFRuntimeDiagnosti
 		TCListenerLookupMode:          diagnostics.TCListenerLookupMode,
 		TCAttachmentMode:              diagnostics.TCAttachmentMode,
 		TCDeliveryInterface:           diagnostics.TCDeliveryInterface,
+		TCNetworkNamespace:            diagnostics.TCNetworkNamespace,
 		TCDeliveryInterfaceIndex:      diagnostics.TCDeliveryInterfaceIndex,
 		TCRoutingMark:                 diagnostics.TCRoutingMark,
 		TCRoutingTable:                diagnostics.TCRoutingTable,
@@ -399,6 +408,13 @@ func diagnosticsForAPI(diagnostics EBPFDiagnostics) adapter.EBPFRuntimeDiagnosti
 		TCLastHealthCheckAt:           diagnostics.TCLastHealthCheckAt,
 		TCLastReconcileAt:             diagnostics.TCLastReconcileAt,
 		TCNetworkGeneration:           diagnostics.TCNetworkGeneration,
+		TCReturnSweepEntries:          diagnostics.TCReturnSweepEntries,
+		TCReturnSweepCapacity:         diagnostics.TCReturnSweepCapacity,
+		TCReturnSweepScanned:          diagnostics.TCReturnSweepScanned,
+		TCReturnSweepRemoved:          diagnostics.TCReturnSweepRemoved,
+		TCAssignmentSweepUsageKnown:   diagnostics.TCAssignmentSweepUsageKnown,
+		TCReturnSweepUsageKnown:       diagnostics.TCReturnSweepUsageKnown,
+		TCAssignmentSweepFailureMap:   diagnostics.TCAssignmentSweepFailureMap,
 		TCAssignmentSweepScanned:      diagnostics.TCAssignmentSweepScanned,
 		TCAssignmentSweepRemoved:      diagnostics.TCAssignmentSweepRemoved,
 		TCAssignmentSweepComplete:     diagnostics.TCAssignmentSweepComplete,
@@ -466,6 +482,9 @@ func diagnosticsForAPI(diagnostics EBPFDiagnostics) adapter.EBPFRuntimeDiagnosti
 			TCSocketLookupFailures:        diagnostics.Counters.TCSocketLookupFailures,
 			TCSKAssignFailures:            diagnostics.Counters.TCSKAssignFailures,
 			TCAssignmentUpdateFailures:    diagnostics.Counters.TCAssignmentUpdateFailures,
+			TCReturnUpdateFailures:        diagnostics.Counters.TCReturnUpdateFailures,
+			TCReturnConflicts:             diagnostics.Counters.TCReturnConflicts,
+			TCReturnLookupFailures:        diagnostics.Counters.TCReturnLookupFailures,
 			TCLocalFragmentPasses:         diagnostics.Counters.TCLocalFragmentPasses,
 			TCSharedFragmentPasses:        diagnostics.Counters.TCSharedFragmentPasses,
 			TokenReservationFailures:      diagnostics.Counters.TokenReservationFailures,
@@ -495,10 +514,27 @@ func (i *Inbound) EBPFKernelRuntime() adapter.EBPFKernelRuntimeDiagnostics {
 	now := time.Now()
 	i.kernelRuntimeAPIAccess.Lock()
 	defer i.kernelRuntimeAPIAccess.Unlock()
-	if !i.kernelRuntimeAPIAt.IsZero() && now.Sub(i.kernelRuntimeAPIAt) < ebpfDiagnosticsAPICacheTTL {
+	if !i.kernelRuntimeAPIAt.IsZero() && now.Sub(i.kernelRuntimeAPIAt) < 5*time.Second {
 		return i.kernelRuntimeAPIValue
 	}
-	diagnostics := kernelRuntimeForAPI(now, commonEBPF.InspectRuntimeState())
+	// Snapshot handles while lifecycle ownership is stable, then enumerate only
+	// those IDs outside the lifecycle lock.
+	i.lifecycleAccess.Lock()
+	owners := []commonEBPF.RuntimeResources{
+		i.cgroupBackendInstance().RuntimeResources(),
+		i.tcBackend().RuntimeResources(),
+		i.selfBypass.RuntimeResources(),
+	}
+	if tracker, ok := i.processTracker.(interface {
+		RuntimeResources() commonEBPF.RuntimeResources
+	}); ok {
+		owners = append(owners, tracker.RuntimeResources())
+	}
+	if shared := i.sharedRewriteInstance(); shared != nil {
+		owners = append(owners, shared.sharedBackendInstance().RuntimeResources())
+	}
+	i.lifecycleAccess.Unlock()
+	diagnostics := kernelRuntimeForAPI(now, commonEBPF.InspectRuntimeResources(owners...))
 	i.kernelRuntimeAPIAt = now
 	i.kernelRuntimeAPIValue = diagnostics
 	return diagnostics
@@ -601,6 +637,7 @@ func (i *Inbound) Diagnostics() EBPFDiagnostics {
 		diagnostics.TCListenerLookupMode = tc.ListenerLookupMode
 		diagnostics.TCAttachmentMode = tc.AttachmentMode
 		diagnostics.TCDeliveryInterface = tc.NetworkInfo.DeliveryInterface
+		diagnostics.TCNetworkNamespace = tc.NetworkInfo.Namespace
 		diagnostics.TCDeliveryInterfaceIndex = tc.NetworkInfo.DeliveryInterfaceIndex
 		diagnostics.TCRoutingMark = tc.NetworkInfo.RoutingMark
 		diagnostics.TCRoutingTable = tc.NetworkInfo.RoutingTable
@@ -691,6 +728,13 @@ func (i *Inbound) Diagnostics() EBPFDiagnostics {
 	diagnostics.TCAssignmentSweepRemoved = i.tcAssignmentSweepRemoved.Load()
 	diagnostics.TCAssignmentSweepComplete = i.tcAssignmentSweepComplete.Load()
 	diagnostics.TCAssignmentSweepEntries = i.tcAssignmentSweepEntries.Load()
+	diagnostics.TCReturnSweepEntries = i.tcReturnSweepEntries.Load()
+	diagnostics.TCReturnSweepCapacity = i.tcReturnSweepCapacity.Load()
+	diagnostics.TCReturnSweepScanned = i.tcReturnSweepScanned.Load()
+	diagnostics.TCReturnSweepRemoved = i.tcReturnSweepRemoved.Load()
+	diagnostics.TCAssignmentSweepUsageKnown = i.tcAssignmentSweepUsageKnown.Load()
+	diagnostics.TCReturnSweepUsageKnown = i.tcReturnSweepUsageKnown.Load()
+	diagnostics.TCAssignmentSweepFailureMap, _ = i.tcAssignmentSweepFailureMap.Load().(string)
 	diagnostics.TCAssignmentSweepCapacity = i.tcAssignmentSweepCapacity.Load()
 	diagnostics.TCAssignmentSweepPressure = i.tcAssignmentSweepPressure.Load()
 	diagnostics.TCAssignmentSweepRuns = i.tcAssignmentSweepRuns.Load()
@@ -738,32 +782,32 @@ func (i *Inbound) Diagnostics() EBPFDiagnostics {
 
 	i.bypassRuleSetAccess.Lock()
 	localState := scopedBypassRuleSetDiagnostics{
-		Consistent:            !i.bypassRuleSetInconsistent,
-		Pending:               i.bypassRuleSetNeedsRetry,
-		PolicyVersion:         i.bypassRuleSetPolicyVersion,
-		ExpectedPolicyVersion: i.bypassRuleSetExpectedVersion,
-		RetryCount:            i.bypassRuleSetRetryCount,
+		Consistent:            !i.localBypassRules.inconsistent,
+		Pending:               i.localBypassRules.needsRetry,
+		PolicyVersion:         i.localBypassRules.policyVersion,
+		ExpectedPolicyVersion: i.localBypassRules.expectedVersion,
+		RetryCount:            i.localBypassRules.retryCount,
 		BackendState:          make(map[string]BypassRuleSetBackendState, 2),
 	}
-	if i.localTCEnabled() && i.tcBackend() != nil {
-		localState.BackendState["TC"] = BypassRuleSetBackendState{Version: i.bypassRuleSetTC.version, Known: i.bypassRuleSetTC.known}
+	if i.localSocketAssignEnabled() && i.tcBackend() != nil {
+		localState.BackendState["TC"] = BypassRuleSetBackendState{Version: i.localBypassRules.tc.version, Known: i.localBypassRules.tc.known}
 	}
 	if i.cgroupBackendInstance() != nil {
-		localState.BackendState["cgroup"] = BypassRuleSetBackendState{Version: i.bypassRuleSetCgroup.version, Known: i.bypassRuleSetCgroup.known}
+		localState.BackendState["cgroup"] = BypassRuleSetBackendState{Version: i.localBypassRules.cgroup.version, Known: i.localBypassRules.cgroup.known}
 	}
 	sharedState := scopedBypassRuleSetDiagnostics{
-		Consistent:            !i.sharedBypassRuleSetInconsistent,
-		Pending:               i.sharedBypassRuleSetNeedsRetry,
-		PolicyVersion:         i.sharedBypassRuleSetPolicyVersion,
-		ExpectedPolicyVersion: i.sharedBypassRuleSetExpectedVersion,
-		RetryCount:            i.sharedBypassRuleSetRetryCount,
+		Consistent:            !i.sharedBypassRules.inconsistent,
+		Pending:               i.sharedBypassRules.needsRetry,
+		PolicyVersion:         i.sharedBypassRules.policyVersion,
+		ExpectedPolicyVersion: i.sharedBypassRules.expectedVersion,
+		RetryCount:            i.sharedBypassRules.retryCount,
 		BackendState:          make(map[string]BypassRuleSetBackendState, 2),
 	}
 	if shared := i.sharedRewriteInstance(); shared != nil && shared.sharedBackendInstance() != nil {
-		sharedState.BackendState["packet_rewrite"] = BypassRuleSetBackendState{Version: i.bypassRuleSetShared.version, Known: i.bypassRuleSetShared.known}
+		sharedState.BackendState["packet_rewrite"] = BypassRuleSetBackendState{Version: i.sharedBypassRules.shared.version, Known: i.sharedBypassRules.shared.known}
 	}
 	if i.sharedSocketAssignEnabled() && i.tcBackend() != nil {
-		sharedState.BackendState["TC"] = BypassRuleSetBackendState{Version: i.sharedBypassRuleSetTC.version, Known: i.sharedBypassRuleSetTC.known}
+		sharedState.BackendState["TC"] = BypassRuleSetBackendState{Version: i.sharedBypassRules.tc.version, Known: i.sharedBypassRules.tc.known}
 	}
 	diagnostics.LocalBypassRuleSet = localState
 	diagnostics.SharedBypassRuleSet = sharedState
@@ -826,6 +870,9 @@ func (i *Inbound) Diagnostics() EBPFDiagnostics {
 			diagnostics.Counters.TCSocketLookupFailures = stats.SocketLookupFailures
 			diagnostics.Counters.TCSKAssignFailures = stats.SKAssignFailures
 			diagnostics.Counters.TCAssignmentUpdateFailures = stats.AssignmentUpdateFailures
+			diagnostics.Counters.TCReturnUpdateFailures = stats.ReturnUpdateFailures
+			diagnostics.Counters.TCReturnConflicts = stats.ReturnConflicts
+			diagnostics.Counters.TCReturnLookupFailures = stats.ReturnLookupFailures
 			diagnostics.Counters.TCLocalFragmentPasses = stats.LocalFragmentPasses
 			diagnostics.Counters.TCSharedFragmentPasses = stats.SharedFragmentPasses
 		}
@@ -977,6 +1024,9 @@ func (d EBPFDiagnostics) WriteText(w io.Writer) error {
 		lines = append(lines, fmt.Sprintf("Waiting interfaces: %s", strings.Join(d.WaitingInterfaces, ", ")))
 	}
 	if d.TCBackendMode != "" {
+		if d.TCNetworkNamespace != "" {
+			lines = append(lines, "TC socket namespace: "+d.TCNetworkNamespace)
+		}
 		lines = append(lines, fmt.Sprintf(
 			"TC runtime: backend=%s listener=%s attachment=%s delivery=%s#%d mark=%d table=%d priority=%d attachments=%d retired_attachments=%d retired_deliveries=%d health=%s generation=%d",
 			d.TCBackendMode, d.TCListenerLookupMode, d.TCAttachmentMode,
@@ -1027,10 +1077,11 @@ func (d EBPFDiagnostics) WriteText(w io.Writer) error {
 		d.UDPReplySockets.Count, d.UDPReplySockets.Peak, d.UDPReplySockets.Evicted, d.UDPReplySockets.CapacityRejected,
 	))
 	lines = append(lines, fmt.Sprintf(
-		"Counters: assignment_lookup_failures=%d tc_socket_lookup_failures=%d tc_sk_assign_failures=%d tc_assignment_update_failures=%d tc_local_fragment_passes=%d tc_shared_fragment_passes=%d token_reservation_failures=%d rewrite_failures=%d "+
+		"Counters: assignment_lookup_failures=%d tc_socket_lookup_failures=%d tc_sk_assign_failures=%d tc_assignment_update_failures=%d tc_return_update_failures=%d tc_return_conflicts=%d tc_return_lookup_failures=%d tc_local_fragment_passes=%d tc_shared_fragment_passes=%d token_reservation_failures=%d rewrite_failures=%d "+
 			"shared_ingress_fragment_passes=%d shared_egress_fragment_passes=%d "+
 			"shared_reconcile_failures=%d recovery_attempts=%d recovery_successes=%d recovery_failures=%d",
 		d.Counters.AssignmentLookupFailures, d.Counters.TCSocketLookupFailures, d.Counters.TCSKAssignFailures, d.Counters.TCAssignmentUpdateFailures,
+		d.Counters.TCReturnUpdateFailures, d.Counters.TCReturnConflicts, d.Counters.TCReturnLookupFailures,
 		d.Counters.TCLocalFragmentPasses, d.Counters.TCSharedFragmentPasses,
 		d.Counters.TokenReservationFailures, d.Counters.RewriteFailures,
 		d.Counters.SharedIngressFragmentPasses, d.Counters.SharedEgressFragmentPasses,

@@ -15,7 +15,6 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 type testEBPFInbound struct {
@@ -112,7 +111,9 @@ func TestGetEBPFDiagnosticsUsesSingBoxAPI(t *testing.T) {
 				SharedExpected:  21,
 				Converged:       false,
 			},
-			Counters: adapter.EBPFCounters{TCSharedFragmentPasses: 9},
+			TCNetworkNamespace: "/proc/42/fd/7",
+			Counters: adapter.EBPFCounters{TCSharedFragmentPasses: 9,
+				TCReturnUpdateFailures: 2, TCReturnConflicts: 3, TCReturnLookupFailures: 4},
 			UDPNAT: adapter.EBPFUDPNATDiagnostics{
 				ActiveSessions:           3,
 				CreatedSessions:          7,
@@ -139,7 +140,19 @@ func TestGetEBPFDiagnosticsUsesSingBoxAPI(t *testing.T) {
 		serviceStatus: &ServiceStatus{Status: ServiceStatus_STARTED},
 		instance:      &Instance{inboundManager: manager},
 	}
-	response, err := service.GetEBPFDiagnostics(context.Background(), &emptypb.Empty{})
+	shallow, err := service.GetEBPFDiagnostics(context.Background(), &EBPFDiagnosticsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shallow.KernelRuntime != nil {
+		t.Fatal("lightweight request enumerated kernel resources")
+	}
+	for _, inbound := range shallow.Inbounds {
+		if inbound.KernelRuntime != nil {
+			t.Fatal("lightweight request included deep snapshot")
+		}
+	}
+	response, err := service.GetEBPFDiagnostics(context.Background(), &EBPFDiagnosticsRequest{Deep: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,6 +193,10 @@ func TestGetEBPFDiagnosticsUsesSingBoxAPI(t *testing.T) {
 		diagnostics.PolicyEpoch.SharedExpected != 21 || diagnostics.PolicyEpoch.Converged {
 		t.Fatalf("policy epoch diagnostics = %+v", diagnostics.PolicyEpoch)
 	}
+	if diagnostics.TcNetworkNamespace != "/proc/42/fd/7" || diagnostics.Counters.TcReturnUpdateFailures != 2 ||
+		diagnostics.Counters.TcReturnConflicts != 3 || diagnostics.Counters.TcReturnLookupFailures != 4 {
+		t.Fatalf("isolated TC diagnostics = %+v", diagnostics)
+	}
 	if response.KernelRuntime == nil || len(response.KernelRuntime.Programs) != 1 ||
 		response.KernelRuntime.Programs[0].Id != 42 || response.KernelRuntime.MapOccupancy == nil ||
 		len(response.KernelRuntime.MapOccupancy.Maps) != 1 || response.KernelRuntime.MapOccupancy.Maps[0].Entries != 3 ||
@@ -194,7 +211,7 @@ func TestGetEBPFDiagnosticsReturnsSchemaVersionWithoutInbound(t *testing.T) {
 		serviceStatus: &ServiceStatus{Status: ServiceStatus_STARTED},
 		instance:      &Instance{inboundManager: &testInboundManager{}},
 	}
-	response, err := service.GetEBPFDiagnostics(context.Background(), &emptypb.Empty{})
+	response, err := service.GetEBPFDiagnostics(context.Background(), &EBPFDiagnosticsRequest{Deep: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +253,7 @@ func TestGetEBPFDiagnosticsGRPCRegistrationAndAuthentication(t *testing.T) {
 	t.Cleanup(func() { _ = connection.Close() })
 	client := NewStartedServiceClient(connection)
 
-	_, err = client.GetEBPFDiagnostics(context.Background(), &emptypb.Empty{})
+	_, err = client.GetEBPFDiagnostics(context.Background(), &EBPFDiagnosticsRequest{Deep: true})
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("unauthenticated call error = %v, want Unauthenticated", err)
 	}
@@ -245,7 +262,7 @@ func TestGetEBPFDiagnosticsGRPCRegistrationAndAuthentication(t *testing.T) {
 		"authorization",
 		"Bearer test-secret",
 	)
-	response, err := client.GetEBPFDiagnostics(authenticatedContext, &emptypb.Empty{})
+	response, err := client.GetEBPFDiagnostics(authenticatedContext, &EBPFDiagnosticsRequest{Deep: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,5 +271,18 @@ func TestGetEBPFDiagnosticsGRPCRegistrationAndAuthentication(t *testing.T) {
 	}
 	if len(response.Inbounds) != 1 || response.Inbounds[0].Tag != "ebpf-in" {
 		t.Fatalf("unexpected RPC response: %+v", response.Inbounds)
+	}
+}
+func TestMergeEBPFKernelRuntimeDeduplicatesSharedResources(t *testing.T) {
+	first := &EBPFKernelRuntimeDiagnostics{ObservedAt: 1, Programs: []*EBPFProgramDiagnostics{{Id: 1}},
+		MapOccupancy: &EBPFMapOccupancyDiagnostics{Status: "pass", Maps: []*EBPFMapDiagnostics{{Id: 3}}}}
+	second := &EBPFKernelRuntimeDiagnostics{ObservedAt: 2, Programs: []*EBPFProgramDiagnostics{{Id: 1}, {Id: 2}},
+		MapOccupancy: &EBPFMapOccupancyDiagnostics{Status: "warning", Maps: []*EBPFMapDiagnostics{{Id: 3}, {Id: 4}}}}
+	aggregate := mergeEBPFKernelRuntime(mergeEBPFKernelRuntime(nil, first), second)
+	if len(aggregate.Programs) != 2 || len(aggregate.MapOccupancy.Maps) != 2 || aggregate.MapOccupancy.Status != "warning" {
+		t.Fatalf("bad aggregate: %+v", aggregate)
+	}
+	if len(first.Programs) != 1 || len(first.MapOccupancy.Maps) != 1 {
+		t.Fatal("aggregate mutated inbound snapshot")
 	}
 }
